@@ -82,6 +82,12 @@ class Note(Base):
     subject = Column(String, nullable=True)
     content = Column(String)
     is_from_admin = Column(Boolean, default=False) # <-- НОВАЯ СТРОКА
+    
+class Attendance(Base):
+    __tablename__ = 'attendance'
+    id = Column(Integer, primary_key=True)
+    schedule_id = Column(Integer) # Привязка к конкретной паре (дата + предмет)
+    student_id = Column(Integer)  # Кто присутствовал
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
@@ -108,6 +114,12 @@ async def init_db():
             await conn.execute(text("ALTER TABLE notes ADD COLUMN IF NOT EXISTS is_from_admin BOOLEAN DEFAULT FALSE;"))
         except Exception as e:
             print(f"Колонки уже существуют или произошла ошибка: {e}")
+
+                await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS attendance (
+                id SERIAL PRIMARY KEY, schedule_id INTEGER, student_id INTEGER
+            );
+        """))
             
         print("База данных готова!")
         
@@ -134,6 +146,7 @@ def get_main_keyboard(is_admin=False):
     keyboard = [
         [KeyboardButton(text='📅 Расписание'), KeyboardButton(text='📚 ДЗ')],
         [KeyboardButton(text='👥 Список группы'), KeyboardButton(text='📝 Заметки')],
+        [KeyboardButton(text='📊 Посещаемость')], # <-- НОВАЯ КНОПКА
     ]
     if is_admin:
         keyboard.append([KeyboardButton(text='⚙️ Админ-панель')])
@@ -147,7 +160,8 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text='🗑 Удалить пару', callback_data='admin_del_schedule')],
         [InlineKeyboardButton(text='📝 Удалить ДЗ', callback_data='admin_del_hw')],
         [InlineKeyboardButton(text='✍️ Заметки студентам', callback_data='admin_notes')], # <-- НОВАЯ КНОПКА
-        [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
+        [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')],
+        [InlineKeyboardButton(text='📊 Посещаемость', callback_data='admin_attendance')]
     ])
 
 def get_group_keyboard():
@@ -331,6 +345,10 @@ async def hw_menu(message: types.Message):
     kb = get_calendar_keyboard(now.year, now.month, action="hwcal")
     await message.answer("Выбери дату, чтобы посмотреть ДЗ на этот день:", reply_markup=kb)
 
+@dp.message(F.text == '📊 Посещаемость')
+async def student_attendance(message: types.Message):
+    await view_attendance_stats(message) # Вызываем ту же функцию
+
 @dp.callback_query(F.data.startswith('hwcalnav_'))
 async def hw_calendar_navigate(callback: types.CallbackQuery):
     parts = callback.data.split('_')
@@ -481,6 +499,145 @@ async def send_hw_file(callback: types.CallbackQuery):
         except: await callback.message.answer_photo(photo=hw.file_id)
     await callback.answer()
 
+# --- ПОСЕЩАЕМОСТЬ (АДМИН) ---
+@dp.callback_query(F.data == 'admin_attendance')
+async def admin_attendance_menu(callback: types.CallbackQuery):
+    now = datetime.now()
+    kb = get_calendar_keyboard(now.year, now.month, action="att")
+    await callback.message.edit_text("Выбери дату, чтобы отметить посещаемость:", reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('attnav_'))
+async def att_calendar_navigate(callback: types.CallbackQuery):
+    parts = callback.data.split('_')
+    year, month = int(parts[1]), int(parts[2])
+    kb = get_calendar_keyboard(year, month, action="att")
+    await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('att_'))
+async def process_att_date(callback: types.CallbackQuery):
+    parts = callback.data.split('_')
+    year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
+    date_str = f"{day:02d}.{month:02d}.{year}"
+    
+    async with async_session() as session:
+        result = await session.execute(select(ScheduleItem).where(ScheduleItem.date_str == date_str).order_by(ScheduleItem.lesson_num))
+        items = result.scalars().all()
+        
+    if not items:
+        await callback.answer(f"На {date_str} пар нет.", show_alert=True)
+        return
+        
+    buttons = []
+    for item in items:
+        emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
+        buttons.append([InlineKeyboardButton(text=f"{item.lesson_num}. {emoji} {item.subject}", callback_data=f"att_lesson_{item.id}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    await callback.message.edit_text(f"Выбери пару на {date_str} для отметки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('att_lesson_'))
+async def mark_attendance(callback: types.CallbackQuery):
+    schedule_id = int(callback.data.split('_')[2])
+    
+    async with async_session() as session:
+        # Получаем информацию о паре
+        result = await session.execute(select(ScheduleItem).where(ScheduleItem.id == schedule_id))
+        item = result.scalars().first()
+        
+        # Получаем всех студентов
+        result = await session.execute(select(Student).order_by(Student.name))
+        students = result.scalars().all()
+        
+        # Получаем текущие отметки
+        result = await session.execute(select(Attendance).where(Attendance.schedule_id == schedule_id))
+        att_records = result.scalars().all()
+        present_ids = [a.student_id for a in att_records]
+
+    text = f"📊 **Посещаемость:** {item.subject} ({item.date_str})\n\n"
+    buttons = []
+    for s in students:
+        if s.id in present_ids:
+            status = "✅"
+            btn_text = f"{status} {s.name}"
+        else:
+            status = "❌"
+            btn_text = f"{status} {s.name}"
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"att_toggle_{schedule_id}_{s.id}")])
+    
+    buttons.append([InlineKeyboardButton(text="🔙 Готово", callback_data="admin_attendance")])
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('att_toggle_'))
+async def toggle_attendance(callback: types.CallbackQuery):
+    parts = callback.data.split('_')
+    schedule_id = int(parts[2])
+    student_id = int(parts[3])
+    
+    async with async_session() as session:
+        # Проверяем, есть ли уже отметка
+        result = await session.execute(select(Attendance).where(Attendance.schedule_id == schedule_id, Attendance.student_id == student_id))
+        existing = result.scalars().first()
+        
+        if existing:
+            # Если есть — удаляем
+            await session.execute(delete(Attendance).where(Attendance.id == existing.id))
+        else:
+            # Если нет — добавляем
+            session.add(Attendance(schedule_id=schedule_id, student_id=student_id))
+        await session.commit()
+        
+    # Перерисовываем сообщение
+    await mark_attendance(callback)
+    await callback.answer()
+
+# --- ПРОСМОТР СТАТИСТИКИ (ВСЕ) ---
+@dp.callback_query(F.data == 'view_attendance_stats')
+async def view_attendance_stats(callback: types.CallbackQuery):
+    async with async_session() as session:
+        result = await session.execute(select(Student).order_by(Student.name))
+        students = result.scalars().all()
+        
+        result = await session.execute(select(ScheduleItem))
+        all_lessons = result.scalars().all()
+        
+        result = await session.execute(select(Attendance))
+        all_att = result.scalars().all()
+        
+    text = "📊 **Статистика посещаемости:**\n\n"
+    
+    # Считаем общее количество пар по предметам
+    total_lessons_by_subject = {}
+    for lesson in all_lessons:
+        if lesson.subject not in total_lessons_by_subject:
+            total_lessons_by_subject[lesson.subject] = 0
+        total_lessons_by_subject[lesson.subject] += 1
+        
+    # Считаем посещения каждого студента по предметам
+    for s in students:
+        text += f"👤 **{s.name}**\n"
+        student_att = [a for a in all_att if a.student_id == s.id]
+        
+        for subj, total in total_lessons_by_subject.items():
+            # Сколько пар посетил
+            attended = 0
+            for att in student_att:
+                lesson = next((l for l in all_lessons if l.id == att.schedule_id), None)
+                if lesson and lesson.subject == subj:
+                    attended += 1
+            
+            if attended > 0 or total > 0:
+                hours = attended * 2
+                total_hours = total * 2
+                text += f"  • {subj}: {attended}/{total} пар ({hours}/{total_hours} акад. часов)\n"
+        text += "\n"
+        
+    buttons = [[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]]
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+    
 # --- СТУДЕНТЫ ---
 @dp.callback_query(F.data == 'admin_add_student')
 async def admin_add_student(callback: types.CallbackQuery, state: FSMContext):
