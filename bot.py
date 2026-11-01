@@ -349,9 +349,102 @@ async def hw_menu(message: types.Message):
     await message.answer("Выбери дату, чтобы посмотреть ДЗ на этот день:", reply_markup=kb)
 
 @dp.message(F.text == '📊 Посещаемость')
-async def student_attendance(message: types.Message):
-    await view_attendance_stats_msg(message)
+async def show_student_stats_for_user(message: types.Message, student):
+    async with async_session() as session:
+        # Получаем все пары
+        result = await session.execute(select(ScheduleItem))
+        all_lessons = result.scalars().all()
+        
+        # Получаем все отметки для этого студента
+        result = await session.execute(select(Attendance).where(Attendance.student_id == student.id))
+        student_att = result.scalars().all()
+        
+    # Считаем общее количество пар по предметам и типам
+    total_stats = {}
+    for lesson in all_lessons:
+        if lesson.subject not in total_stats:
+            total_stats[lesson.subject] = {"Лекция": 0, "Семинар/Практика": 0}
+            
+        if lesson.lesson_type == "Лекция":
+            total_stats[lesson.subject]["Лекция"] += 1
+        else:
+            total_stats[lesson.subject]["Семинар/Практика"] += 1
+            
+    # Считаем, сколько посетил
+    attended_stats = {}
+    for att in student_att:
+        lesson = next((l for l in all_lessons if l.id == att.schedule_id), None)
+        if lesson:
+            if lesson.subject not in attended_stats:
+                attended_stats[lesson.subject] = {"Лекция": 0, "Семинар/Практика": 0}
+            if lesson.lesson_type == "Лекция":
+                attended_stats[lesson.subject]["Лекция"] += 1
+            else:
+                attended_stats[lesson.subject]["Семинар/Практика"] += 1
 
+    text = f"📊 **Твоя посещаемость:**\n\n"
+    
+    has_data = False
+    for subj, totals in total_stats.items():
+        att = attended_stats.get(subj, {"Лекция": 0, "Семинар/Практика": 0})
+        
+        if totals["Лекция"] > 0 or totals["Семинар/Практика"] > 0:
+            has_data = True
+            text += f"📚 **{subj}**\n"
+            
+            if totals["Лекция"] > 0:
+                hours_att = att["Лекция"] * 2
+                hours_total = totals["Лекция"] * 2
+                text += f"  🔵 Лекции: {att['Лекция']}/{totals['Лекция']} пар ({hours_att}/{hours_total} ч.)\n"
+                
+            if totals["Семинар/Практика"] > 0:
+                hours_att = att["Семинар/Практика"] * 2
+                hours_total = totals["Семинар/Практика"] * 2
+                text += f"  🟢 Семинары/Практики: {att['Семинар/Практика']}/{totals['Семинар/Практика']} пар ({hours_att}/{hours_total} ч.)\n"
+                
+            text += "\n"
+
+    if not has_data:
+        text += "Пока нет данных о посещаемости."
+
+    buttons = [[InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu")]]
+    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.message(F.text == '📊 Посещаемость')
+async def view_attendance_stats_msg(message: types.Message):
+    user_id = str(message.from_user.id)
+    
+    async with async_session() as session:
+        # Проверяем, кто нажал кнопку (староста или студент)
+        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+        current_student = result.scalars().first()
+        
+        # Если это не староста, показываем только его статистику
+        if message.from_user.id != ADMIN_ID:
+            if not current_student:
+                await message.answer("Ты не зарегистрирован в боте. Нажми 'Список группы' и привяжи аккаунт.")
+                return
+                
+            # Показываем статистику только этого студента
+            await show_student_stats_for_user(message, current_student)
+            return
+
+        # Если это староста, показываем список всех
+        result = await session.execute(select(Student).order_by(Student.name))
+        students = result.scalars().all()
+        
+    if not students:
+        await message.answer("В группе пока нет студентов.")
+        return
+        
+    text = "📊 **Статистика посещаемости:**\nНажми на студента, чтобы увидеть подробности:"
+    buttons = []
+    for s in students:
+        buttons.append([InlineKeyboardButton(text=f"👤 {s.name}", callback_data=f"viewstat_{s.id}")])
+        
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu")])
+    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    
 @dp.callback_query(F.data.startswith('viewstat_'))
 async def show_student_stats(callback: types.CallbackQuery):
     student_id = int(callback.data.split('_')[1])
