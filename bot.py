@@ -42,7 +42,15 @@ SUBJECTS = [
     "Безопастность жизнедеятельности",
     "Психологический тренинг рублево"
 ]
+
 LESSON_TYPES = ["Лекция", "Семинар", "Практика"]
+
+# Эмодзи для цветовой маркировки
+TYPE_EMOJI = {
+    "Лекция": "🔵",
+    "Семинар": "🟢",
+    "Практика": "🟡"
+}
 
 # --- БАЗА ДАННЫХ ---
 Base = declarative_base()
@@ -160,7 +168,6 @@ def get_calendar_keyboard(year: int, month: int, action: str = "cal"):
         InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back"),
         InlineKeyboardButton(text="▶️", callback_data=f"{action}nav_{next_year}_{next_month}")
     ])
-    
     return kb
 
 # --- ХЭНДЛЕРЫ ---
@@ -178,7 +185,6 @@ async def admin_panel(message: types.Message):
 @dp.callback_query(F.data == 'admin_back')
 async def admin_back(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    # Вместо удаления сообщения, редактируем его обратно в главное меню
     await callback.message.edit_text("Главное меню:", reply_markup=get_admin_keyboard())
     await callback.answer()
 
@@ -224,7 +230,7 @@ async def process_del_student(callback: types.CallbackQuery):
         await session.commit()
     await admin_del_student(callback)
 
-# --- ДОБАВЛЕНИЕ ПАРЫ (ЧЕРЕЗ КАЛЕНДАРЬ) ---
+# --- ДОБАВЛЕНИЕ ПАРЫ ---
 @dp.callback_query(F.data == 'admin_add_schedule')
 async def admin_add_schedule(callback: types.CallbackQuery, state: FSMContext):
     now = datetime.now()
@@ -263,6 +269,7 @@ async def process_sched_num(callback: types.CallbackQuery, state: FSMContext):
     
     buttons = []
     for idx, subj in enumerate(SUBJECTS):
+        # Обрезаем длинные названия для кнопки
         btn_text = subj if len(subj) < 25 else subj[:22] + "..."
         buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"subj_{idx}")])
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
@@ -276,8 +283,12 @@ async def process_sched_subject(callback: types.CallbackQuery, state: FSMContext
     subject = SUBJECTS[idx]
     await state.update_data(subject=subject)
     
-    buttons = [[InlineKeyboardButton(text=l_type, callback_data=f"type_{l_type}")] for l_type in LESSON_TYPES]
+    buttons = []
+    for l_type in LESSON_TYPES:
+        emoji = TYPE_EMOJI.get(l_type, "")
+        buttons.append([InlineKeyboardButton(text=f"{emoji} {l_type}", callback_data=f"type_{l_type}")])
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
+    
     await callback.message.edit_text(f"Предмет: {subject}\nВыбери тип пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
@@ -300,7 +311,6 @@ async def process_sched_type(callback: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="add_more_sched")],
         [InlineKeyboardButton(text="✅ В админ-панель", callback_data="admin_back")]
     ]
-    
     await callback.message.edit_text(
         f"✅ Пара добавлена:\n{data['date']}, {data['num']} пара\n{data['subject']} ({lesson_type})", 
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -375,20 +385,24 @@ async def process_view_date(callback: types.CallbackQuery):
         items = result.scalars().all()
         
     if not items:
-        # Возвращаемся в календарь, а не спамим
         await callback.answer(f"На {date_str} пар нет.", show_alert=True)
         return
         
     text = f"📅 **Расписание на {date_str}**\n\n"
     buttons = []
-    unique_items = []
-    for item in items:
-        if not any(u.subject == item.subject for u in unique_items):
-            unique_items.append(item)
-        text += f"{item.lesson_num}. {item.time_start}-{item.time_end} — {item.subject} ({item.lesson_type})\n"
     
-    for item in unique_items:
-        buttons.append([InlineKeyboardButton(text=item.subject, callback_data=f"viewsub_{item.id}")])
+    # Выводим каждую пару отдельно (без объединения)
+    for item in items:
+        emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
+        text += f"{item.lesson_num}. {item.time_start}-{item.time_end} {emoji} **{item.subject}** ({item.lesson_type})\n"
+        
+        # Текст для кнопки обрезаем, чтобы влез
+        btn_text = f"{emoji} {item.subject}"
+        if len(btn_text) > 30:
+            btn_text = btn_text[:27] + "..."
+        
+        # В callback_data передаем ID пары
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"viewsub_{item.id}")])
     
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="viewnav_back")])
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -409,7 +423,8 @@ async def show_subject_details(callback: types.CallbackQuery):
         item = result.scalars().first()
     
     buttons = [[InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_{item.date_str[6:]}_{item.date_str[3:5]}_{item.date_str[:2]}")]]
-    await callback.message.edit_text(f"📚 Материалы по предмету **{item.subject}** ({item.lesson_type}) скоро появятся тут!", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
+    await callback.message.edit_text(f"{emoji} **{item.subject}** ({item.lesson_type})\n\n📚 Материалы по этому предмету скоро появятся тут!", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 # --- СПИСОК ГРУППЫ ---
@@ -501,7 +516,7 @@ async def web_server():
 async def main():
     await init_db()
     asyncio.create_task(web_server())
-    print('Бот запущен (с кнопками Назад и без спама)!')
+    print('Бот запущен (цветные пары и отдельные кнопки)!')
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
