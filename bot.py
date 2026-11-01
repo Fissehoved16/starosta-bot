@@ -35,7 +35,14 @@ async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession
 
 async def init_db():
     async with engine.begin() as conn:
-        # Принудительно создаем таблицу с нужными типами, если её нет
+        try:
+            # Пытаемся изменить тип существующего столбца на BIGINT
+            await conn.execute(text("ALTER TABLE students ALTER COLUMN telegram_id TYPE BIGINT;"))
+            print("Тип столбца telegram_id успешно изменен на BIGINT!")
+        except Exception as e:
+            print(f"Столбец уже BIGINT или таблицы нет: {e}")
+        
+        # На всякий случай создаем таблицу, если ее вдруг нет
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS students (
                 id SERIAL PRIMARY KEY,
@@ -45,7 +52,6 @@ async def init_db():
                 notify_all BOOLEAN DEFAULT FALSE
             );
         """))
-
 # --- БОТ ---
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
