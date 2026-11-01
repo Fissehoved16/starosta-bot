@@ -162,8 +162,8 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text='🗑 Удалить пару', callback_data='admin_del_schedule')],
         [InlineKeyboardButton(text='📝 Удалить ДЗ', callback_data='admin_del_hw')],
         [InlineKeyboardButton(text='✍️ Заметки студентам', callback_data='admin_notes')], # <-- НОВАЯ КНОПКА
-        [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')],
-        [InlineKeyboardButton(text='📊 Посещаемость', callback_data='admin_attendance')]
+        [InlineKeyboardButton(text='📊 Посещаемость', callback_data='admin_attendance')],
+        [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
     ])
 
 def get_group_keyboard():
