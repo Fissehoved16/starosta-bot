@@ -520,6 +520,10 @@ async def att_calendar_navigate(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith('att_'))
 async def process_att_date(callback: types.CallbackQuery):
     parts = callback.data.split('_')
+    # Проверяем, что это действительно дата (4 части), а не что-то другое
+    if len(parts) != 4:
+        return
+        
     year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
     date_str = f"{day:02d}.{month:02d}.{year}"
     
@@ -534,12 +538,12 @@ async def process_att_date(callback: types.CallbackQuery):
     buttons = []
     for item in items:
         emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
-        buttons.append([InlineKeyboardButton(text=f"{item.lesson_num}. {emoji} {item.subject}", callback_data=f"att_lesson_{item.id}")])
+        buttons.append([InlineKeyboardButton(text=f"{item.lesson_num}. {emoji} {item.subject}", callback_data=f"mark_att_{item.id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     await callback.message.edit_text(f"Выбери пару на {date_str} для отметки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
-@dp.callback_query(F.data.startswith('att_lesson_'))
+@dp.callback_query(F.data.startswith('mark_att_'))
 async def mark_attendance(callback: types.CallbackQuery):
     try:
         schedule_id = int(callback.data.split('_')[2])
@@ -1122,10 +1126,8 @@ async def process_view_date(callback: types.CallbackQuery):
         if len(btn_text) > 30: btn_text = btn_text[:27] + "..."
         
         # Если это староста, добавляем кнопку посещаемости
-        if callback.from_user.id == ADMIN_ID:
-            buttons.append([InlineKeyboardButton(text=f"📊 {item.lesson_num}. {item.subject}", callback_data=f"att_lesson_{item.id}")])
-        else:
-            buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"viewsub_{item.id}")])
+                if callback.from_user.id == ADMIN_ID:
+            buttons.append([InlineKeyboardButton(text=f"📊 {item.lesson_num}. {item.subject}", callback_data=f"mark_att_{item.id}")])
     
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_calendar_custom")])
     
