@@ -188,12 +188,26 @@ async def register_student(callback: types.CallbackQuery):
         await callback.answer()
 @dp.callback_query(F.data.startswith('link_'))
 async def link_account(callback: types.CallbackQuery):
-    student_id = int(callback.data.split('_')[1])
-    user_id = callback.from_user.id
-    
-    async with async_session() as session:
-        await session.execute(update(Student).where(Student.id == student_id).values(telegram_id=user_id))
-        await session.commit()
+    try:
+        student_id = int(callback.data.split('_')[1])
+        user_id = str(callback.from_user.id) # Сразу делаем строкой!
+        
+        async with async_session() as session:
+            await session.execute(update(Student).where(Student.id == student_id).values(telegram_id=user_id))
+            await session.commit()
+            
+            # Получаем имя
+            result = await session.execute(select(Student).where(Student.id == student_id))
+            student = result.scalars().first()
+            
+        await callback.message.edit_text(
+            f"Отлично! Теперь ты в системе как {student.name}.\nНастроим уведомления?", 
+            reply_markup=get_notify_keyboard()
+        )
+        await callback.answer()
+    except Exception as e:
+        await callback.message.answer(f"Ошибка при привязке: {e}")
+        await callback.answer()
         
         # Получаем имя
         result = await session.execute(select(Student).where(Student.id == student_id))
@@ -206,18 +220,21 @@ async def link_account(callback: types.CallbackQuery):
 # --- НАСТРОЙКИ УВЕДОМЛЕНИЙ ---
 @dp.callback_query(F.data.startswith('notify_all_'))
 async def set_notification(callback: types.CallbackQuery):
-    action = callback.data.split('_')[2]
-    user_id = callback.from_user.id
-    notify_value = True if action == 'on' else False
-    
-    async with async_session() as session:
-        await session.execute(update(Student).where(Student.telegram_id == str(user_id)).values(notify_all=notify_value))
-        await session.commit()
+    try:
+        action = callback.data.split('_')[2]
+        user_id = str(callback.from_user.id) # Тоже строка
+        notify_value = True if action == 'on' else False
         
-    status = "включены" if notify_value else "выключены"
-    await callback.message.edit_text(f"Уведомления о ДР {status}!")
-    await callback.answer()
-
+        async with async_session() as session:
+            await session.execute(update(Student).where(Student.telegram_id == user_id).values(notify_all=notify_value))
+            await session.commit()
+            
+        status = "включены" if notify_value else "выключены"
+        await callback.message.edit_text(f"Уведомления о ДР {status}!")
+        await callback.answer()
+    except Exception as e:
+        await callback.message.answer(f"Ошибка с уведомлениями: {e}")
+        await callback.answer()
 # --- ЗАГЛУШКИ ---
 @dp.message(F.text == '📅 Расписание')
 async def schedule(message: types.Message):
