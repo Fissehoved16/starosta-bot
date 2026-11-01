@@ -825,7 +825,7 @@ async def process_sched_type(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(date=data['date']) 
     
     buttons = [
-        [InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="add_more_sched")], 
+        [InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="addmore_custom")], 
         [InlineKeyboardButton(text="✅ В админ-панель", callback_data="admin_back")]
     ]
     
@@ -835,7 +835,7 @@ async def process_sched_type(callback: types.CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
-@dp.callback_query(F.data == 'add_more_sched')
+@dp.callback_query(F.data == 'addmore_custom')
 async def add_more_sched(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     date_str = data.get('date')
