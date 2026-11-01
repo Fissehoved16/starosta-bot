@@ -79,8 +79,9 @@ class Note(Base):
     __tablename__ = 'notes'
     id = Column(Integer, primary_key=True)
     student_id = Column(Integer)
-    subject = Column(String, nullable=True) # Если пусто, значит заметка личная
+    subject = Column(String, nullable=True)
     content = Column(String)
+    is_from_admin = Column(Boolean, default=False) # <-- НОВАЯ СТРОКА
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
@@ -99,14 +100,17 @@ async def init_db():
                 id SERIAL PRIMARY KEY, student_id INTEGER, subject VARCHAR, content VARCHAR
             );
         """))
-        # ⚠️ ДОБАВЛЯЕМ ЭТУ СТРОКУ, чтобы обновить старую таблицу
+        
+        # ⚠️ Обновляем старую таблицу (добавляем колонки, если их нет)
         try:
             await conn.execute(text("ALTER TABLE notes ADD COLUMN IF NOT EXISTS subject VARCHAR;"))
+            # ВОТ ЗДЕСЬ ДОБАВЛЯЕМ НОВУЮ СТРОКУ:
+            await conn.execute(text("ALTER TABLE notes ADD COLUMN IF NOT EXISTS is_from_admin BOOLEAN DEFAULT FALSE;"))
         except Exception as e:
-            print(f"Колонка subject уже существует или произошла ошибка: {e}")
+            print(f"Колонки уже существуют или произошла ошибка: {e}")
             
         print("База данных готова!")
-
+        
 # --- БОТ ---
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -511,9 +515,37 @@ async def process_del_student(callback: types.CallbackQuery):
 async def notes_menu(message: types.Message):
     buttons = [
         [InlineKeyboardButton(text="👤 Личные заметки", callback_data="notes_personal")],
-        [InlineKeyboardButton(text="📚 Заметки по предметам", callback_data="notes_subjects")]
+        [InlineKeyboardButton(text="📚 Заметки по предметам", callback_data="notes_subjects")],
+        [InlineKeyboardButton(text="📢 Заметки от старосты", callback_data="notes_from_admin")] # <-- НОВАЯ КНОПКА
     ]
     await message.answer("Выбери тип заметок:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+@dp.callback_query(F.data == 'notes_from_admin')
+async def show_admin_notes(callback: types.CallbackQuery):
+    user_id = str(callback.from_user.id)
+    async with async_session() as session:
+        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+        student = result.scalars().first()
+        
+    if not student:
+        await callback.answer("Сначала зарегистрируйся!", show_alert=True)
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(Note).where(Note.student_id == student.id, Note.is_from_admin == True))
+        notes = result.scalars().all()
+        
+    text = "📢 **Заметки от старосты:**\n\n"
+    buttons = []
+    if not notes:
+        text += "Пока заметок от старосты нет."
+    else:
+        for note in notes:
+            subj = f" ({note.subject})" if note.subject else ""
+            text += f"• {note.content}{subj}\n"
+            
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="notes_back")])
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
 
 @dp.callback_query(F.data == 'notes_personal')
 async def show_personal_notes(callback: types.CallbackQuery):
@@ -588,7 +620,8 @@ async def show_notes_for_subject(callback: types.CallbackQuery):
 async def notes_back(callback: types.CallbackQuery):
     buttons = [
         [InlineKeyboardButton(text="👤 Личные заметки", callback_data="notes_personal")],
-        [InlineKeyboardButton(text="📚 Заметки по предметам", callback_data="notes_subjects")]
+        [InlineKeyboardButton(text="📚 Заметки по предметам", callback_data="notes_subjects")],
+        [InlineKeyboardButton(text="📢 Заметки от старосты", callback_data="notes_from_admin")] # <-- ДОБАВИТЬ
     ]
     await callback.message.edit_text("Выбери тип заметок:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
@@ -630,14 +663,13 @@ async def save_note(message: types.Message, state: FSMContext):
     content = message.text
     data = await state.get_data()
     subject = data.get('note_subject')
-    target_student_id = data.get('target_student_id') # Если это заметка от старосты
+    target_student_id = data.get('target_student_id')
     
     async with async_session() as session:
         if target_student_id:
-            # Это староста пишет заметку студенту
             student_id = target_student_id
+            is_from_admin = True
         else:
-            # Это студент пишет себе
             user_id = str(message.from_user.id)
             result = await session.execute(select(Student).where(Student.telegram_id == user_id))
             student = result.scalars().first()
@@ -645,14 +677,28 @@ async def save_note(message: types.Message, state: FSMContext):
                 await message.answer("Ошибка: ты не зарегистрирован!")
                 return
             student_id = student.id
+            is_from_admin = False
             
-        session.add(Note(student_id=student_id, subject=subject, content=content))
+        session.add(Note(student_id=student_id, subject=subject, content=content, is_from_admin=is_from_admin))
         await session.commit()
         
+        # Если это староста, отправляем уведомление студенту
+        if is_from_admin:
+            result = await session.execute(select(Student).where(Student.id == student_id))
+            student = result.scalars().first()
+            if student and student.telegram_id:
+                try:
+                    note_preview = f"📢 **Староста добавил(а) вам заметку:**\n\n"
+                    if subject:
+                        note_preview += f"📚 По предмету: *{subject}*\n"
+                    note_preview += f"💬 {content}"
+                    await bot.send_message(student.telegram_id, note_preview, parse_mode="Markdown")
+                except Exception as e:
+                    print(f"Не удалось отправить уведомление студенту: {e}")
+
     await message.answer("✅ Заметка добавлена!")
     await state.clear()
     
-    # Возвращаем старосту в админку, а студента - в его заметки
     if message.from_user.id == ADMIN_ID:
         await message.answer("Заметка сохранена для студента.", reply_markup=get_main_keyboard(is_admin=True))
     else:
