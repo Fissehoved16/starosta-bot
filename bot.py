@@ -10,6 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy import Column, Integer, String, select, Boolean, update, text, delete
+import calendar
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.getenv("BOT_TOKEN", "9003221863:AAFxgNJNlwejxnkYVhnuYtsWREa3mNWEMnM")
@@ -41,7 +42,6 @@ SUBJECTS = [
     "Безопастность жизнедеятельности",
     "Психологический тренинг рублево"
 ]
-
 LESSON_TYPES = ["Лекция", "Семинар", "Практика"]
 
 # --- БАЗА ДАННЫХ ---
@@ -56,9 +56,9 @@ class Student(Base):
     notify_all = Column(Boolean, default=False)
 
 class ScheduleItem(Base):
-    __tablename__ = 'schedule_dates' # Новая таблица для дат
+    __tablename__ = 'schedule_dates'
     id = Column(Integer, primary_key=True)
-    date_str = Column(String) # Храним как "02.11.2026"
+    date_str = Column(String)
     lesson_num = Column(Integer)
     subject = Column(String)
     lesson_type = Column(String)
@@ -91,7 +91,7 @@ class AddStudent(StatesGroup):
     birthday = State()
 
 class AddSchedule(StatesGroup):
-    date = State() # Состояние ожидания даты
+    date = State()
     num = State()
 
 # --- КЛАВИАТУРЫ ---
@@ -123,6 +123,53 @@ def get_notify_keyboard():
         [InlineKeyboardButton(text='🔔 Получать ВСЕ ДР', callback_data='notify_all_on')],
         [InlineKeyboardButton(text='🔕 Не получать ДР', callback_data='notify_all_off')]
     ])
+
+# --- ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ КАЛЕНДАРЯ ---
+def get_calendar_keyboard(year: int, month: int):
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    
+    month_names = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", 
+                   "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
+    
+    # Кнопка с названием месяца
+    kb.inline_keyboard.append([InlineKeyboardButton(text=f"{month_names[month-1]} {year}", callback_data="ignore")])
+    
+    # Дни недели (Пн-Вс)
+    kb.inline_keyboard.append([
+        InlineKeyboardButton(text="Пн", callback_data="ignore"),
+        InlineKeyboardButton(text="Вт", callback_data="ignore"),
+        InlineKeyboardButton(text="Ср", callback_data="ignore"),
+        InlineKeyboardButton(text="Чт", callback_data="ignore"),
+        InlineKeyboardButton(text="Пт", callback_data="ignore"),
+        InlineKeyboardButton(text="Сб", callback_data="ignore"),
+        InlineKeyboardButton(text="Вс", callback_data="ignore"),
+    ])
+    
+    # Получаем матрицу дней (недели) для месяца
+    # calendar.monthcalendar возвращает список недель, где 0 - пустые дни
+    month_days = calendar.monthcalendar(year, month)
+    
+    for week in month_days:
+        row = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(text=" ", callback_data="ignore"))
+            else:
+                row.append(InlineKeyboardButton(text=str(day), callback_data=f"cal_{year}_{month}_{day}"))
+        kb.inline_keyboard.append(row)
+        
+    # Кнопки навигации
+    prev_month = month - 1 if month > 1 else 12
+    prev_year = year if month > 1 else year - 1
+    next_month = month + 1 if month < 12 else 1
+    next_year = year if month < 12 else year + 1
+    
+    kb.inline_keyboard.append([
+        InlineKeyboardButton(text="◀️", callback_data=f"calnav_{prev_year}_{prev_month}"),
+        InlineKeyboardButton(text="▶️", callback_data=f"calnav_{next_year}_{next_month}")
+    ])
+    
+    return kb
 
 # --- ХЭНДЛЕРЫ ---
 @dp.message(Command('start'))
@@ -186,21 +233,28 @@ async def process_del_student(callback: types.CallbackQuery):
     await callback.message.answer("Студент удален.")
     await admin_del_student(callback)
 
-# --- ДОБАВЛЕНИЕ ПАРЫ (ПО ДАТАМ) ---
+# --- ДОБАВЛЕНИЕ ПАРЫ (ЧЕРЕЗ КАЛЕНДАРЬ) ---
 @dp.callback_query(F.data == 'admin_add_schedule')
 async def admin_add_schedule(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("Введи дату пары (в формате ДД.ММ.ГГГГ, например 02.11.2026):")
-    await state.set_state(AddSchedule.date)
+    now = datetime.now()
+    kb = get_calendar_keyboard(now.year, now.month)
+    await callback.message.edit_text("Выбери дату для новой пары:", reply_markup=kb)
     await callback.answer()
 
-@dp.message(AddSchedule.date)
-async def process_sched_date(message: types.Message, state: FSMContext):
-    date_str = message.text
-    # Простая проверка формата
-    if len(date_str) != 10 or date_str[2] != '.' or date_str[5] != '.':
-        await message.answer("Неверный формат. Введи дату как ДД.ММ.ГГГГ (например, 02.11.2026):")
-        return
-        
+@dp.callback_query(F.data.startswith('calnav_'))
+async def calendar_navigate(callback: types.CallbackQuery):
+    parts = callback.data.split('_')
+    year, month = int(parts[1]), int(parts[2])
+    kb = get_calendar_keyboard(year, month)
+    await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('cal_'))
+async def process_sched_date(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split('_')
+    year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
+    
+    date_str = f"{day:02d}.{month:02d}.{year}"
     await state.update_data(date=date_str)
     
     buttons = []
@@ -208,8 +262,9 @@ async def process_sched_date(message: types.Message, state: FSMContext):
         buttons.append([InlineKeyboardButton(text=f"{num} пара ({time})", callback_data=f"setnum_{num}")])
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
     
-    await message.answer(f"Дата: {date_str}\nВыбери номер пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.message.edit_text(f"Дата: {date_str}\nВыбери номер пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(AddSchedule.num)
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith('setnum_'))
 async def process_sched_num(callback: types.CallbackQuery, state: FSMContext):
@@ -250,7 +305,6 @@ async def process_sched_type(callback: types.CallbackQuery, state: FSMContext):
         session.add(new_item)
         await session.commit()
     
-    # Возможность добавить ещё одну пару на эту же дату
     buttons = [[InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="add_more_sched")],
                [InlineKeyboardButton(text="✅ Закончить", callback_data="admin_back")]]
     
@@ -258,7 +312,6 @@ async def process_sched_type(callback: types.CallbackQuery, state: FSMContext):
         f"✅ Пара добавлена:\n{data['date']}, {data['num']} пара\n{data['subject']} ({lesson_type})", 
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
-    # Сохраняем дату в состоянии, чтобы не вводить её снова
     await state.update_data(date=data['date']) 
     await callback.answer()
 
@@ -304,27 +357,30 @@ async def process_del_schedule(callback: types.CallbackQuery):
     await callback.message.answer("Пара удалена.")
     await admin_del_schedule(callback)
 
-# --- ПРОСМОТР РАСПИСАНИЯ (ДЛЯ СТУДЕНТОВ) ---
+# --- ПРОСМОТР РАСПИСАНИЯ (КАЛЕНДАРЬ ДЛЯ ВСЕХ) ---
 @dp.message(F.text == '📅 Расписание')
 async def schedule_menu(message: types.Message):
-    await message.answer("Введи дату, на которую хочешь посмотреть расписание (в формате ДД.ММ.ГГГГ):\n\nНапример: 02.11.2026", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='🔙 Назад в меню')]], resize_keyboard=True))
+    now = datetime.now()
+    kb = get_calendar_keyboard(now.year, now.month)
+    await message.answer("Выбери дату, чтобы посмотреть расписание:", reply_markup=kb)
 
-# Обработка ввода даты студентом
-@dp.message(F.text.regexp(r'^\d{2}\.\d{2}\.\d{4}$'))
-async def show_schedule_by_date(message: types.Message):
-    date_str = message.text
+@dp.callback_query(F.data.startswith('viewcal_'))
+async def process_view_date(callback: types.CallbackQuery):
+    parts = callback.data.split('_')
+    year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
+    
+    date_str = f"{day:02d}.{month:02d}.{year}"
     async with async_session() as session:
         result = await session.execute(select(ScheduleItem).where(ScheduleItem.date_str == date_str).order_by(ScheduleItem.lesson_num))
         items = result.scalars().all()
-    
+        
     if not items:
-        await message.answer(f"📅 На {date_str} пар нет.")
+        await callback.message.answer(f"📅 На {date_str} пар нет.")
         return
         
     text = f"📅 **Расписание на {date_str}**\n\n"
     buttons = []
     unique_items = []
-    
     for item in items:
         if not any(u.subject == item.subject for u in unique_items):
             unique_items.append(item)
@@ -332,13 +388,8 @@ async def show_schedule_by_date(message: types.Message):
     
     for item in unique_items:
         buttons.append([InlineKeyboardButton(text=item.subject, callback_data=f"viewsub_{item.id}")])
-    
-    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-@dp.message(F.text == '🔙 Назад в меню')
-async def back_to_menu(message: types.Message):
-    is_admin = message.from_user.id == ADMIN_ID
-    await message.answer("Главное меню:", reply_markup=get_main_keyboard(is_admin))
+        
+    await callback.message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @dp.callback_query(F.data.startswith('viewsub_'))
 async def show_subject_details(callback: types.CallbackQuery):
@@ -437,7 +488,7 @@ async def web_server():
 async def main():
     await init_db()
     asyncio.create_task(web_server())
-    print('Бот запущен с расписанием по датам!')
+    print('Бот запущен с календарем!')
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
