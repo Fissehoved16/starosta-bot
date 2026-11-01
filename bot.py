@@ -86,7 +86,6 @@ async def init_db():
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- СОСТОЯНИЯ (FSM) ---
 class AddStudent(StatesGroup):
     name = State()
     birthday = State()
@@ -206,12 +205,10 @@ async def process_sched_num(callback: types.CallbackQuery, state: FSMContext):
     num = int(callback.data.split('_')[1])
     await state.update_data(num=num)
     
-    # Показываем список предметов из шаблона
     buttons = []
-    for subj in SUBJECTS:
-        # Ограничиваем длину текста на кнопке, чтобы она не ломалась
+    for idx, subj in enumerate(SUBJECTS):
         btn_text = subj if len(subj) < 25 else subj[:22] + "..."
-        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"subj_{subj}")])
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"subj_{idx}")])
     
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
     await callback.message.edit_text("Выбери предмет:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -219,10 +216,10 @@ async def process_sched_num(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith('subj_'))
 async def process_sched_subject(callback: types.CallbackQuery, state: FSMContext):
-    subject = callback.data.split('_', 1)[1] # Берем всё, что после "subj_"
+    idx = int(callback.data.split('_')[1])
+    subject = SUBJECTS[idx]
     await state.update_data(subject=subject)
     
-    # Показываем типы пар
     buttons = []
     for l_type in LESSON_TYPES:
         buttons.append([InlineKeyboardButton(text=l_type, callback_data=f"type_{l_type}")])
