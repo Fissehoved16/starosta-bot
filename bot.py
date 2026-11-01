@@ -161,7 +161,7 @@ async def register_student(callback: types.CallbackQuery):
         
         async with async_session() as session:
             # Ищем, есть ли уже такой студент в базе по ID
-            result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+            result = await session.execute(select(Student).where(Student.telegram_id == str(user_id)))
             existing_student = result.scalars().first()
             
             if existing_student:
@@ -211,7 +211,7 @@ async def set_notification(callback: types.CallbackQuery):
     notify_value = True if action == 'on' else False
     
     async with async_session() as session:
-        await session.execute(update(Student).where(Student.telegram_id == user_id).values(notify_all=notify_value))
+        await session.execute(update(Student).where(Student.telegram_id == str(user_id)).values(notify_all=notify_value))
         await session.commit()
         
     status = "включены" if notify_value else "выключены"
