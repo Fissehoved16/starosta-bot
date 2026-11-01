@@ -131,7 +131,8 @@ dp = Dispatcher()
 
 class AddStudent(StatesGroup):
     name = State()
-    birthday = State()
+    birthday_choice = State()
+    birthday_input = State()
 
 class AddSchedule(StatesGroup):
     date = State()
@@ -703,16 +704,63 @@ async def admin_add_student(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(AddStudent.name)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("Теперь введи дату рождения (ДД.ММ.ГГГГ):")
-    await state.set_state(AddStudent.birthday)
+    
+    buttons = [
+        [InlineKeyboardButton(text="📅 Ввести дату рождения", callback_data="add_bday_yes")],
+        [InlineKeyboardButton(text="⏭ Пропустить (введет сам)", callback_data="add_bday_no")]
+    ]
+    await message.answer("Хочешь указать дату рождения?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await state.set_state(AddStudent.birthday_choice)
 
-@dp.message(AddStudent.birthday)
-async def process_birthday(message: types.Message, state: FSMContext):
+@dp.callback_query(F.data == 'add_bday_yes')
+async def process_birthday_choice_yes(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введи дату рождения (в формате ДД.ММ, например 05.11):")
+    await state.set_state(AddStudent.birthday_input)
+    await callback.answer()
+
+@dp.callback_query(F.data == 'add_bday_no')
+async def process_birthday_choice_no(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
+    name = data['name']
+    
     async with async_session() as session:
-        session.add(Student(name=data['name'], birthday=message.text))
+        session.add(Student(name=name, birthday=None))
         await session.commit()
-    await message.answer(f"Студент {data['name']} добавлен!", reply_markup=get_main_keyboard(is_admin=True))
+        
+    await callback.message.edit_text(f"Студент {name} добавлен без даты рождения.")
+    await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard(is_admin=True))
+    await state.clear()
+    await callback.answer()
+
+@dp.message(AddStudent.birthday_input)
+async def process_birthday_input(message: types.Message, state: FSMContext):
+    text = message.text
+    if len(text) != 5 or text[2] != '.':
+        await message.answer("Неверный формат. Попробуй ДД.ММ (например, 05.11):")
+        return
+        
+    data = await state.get_data()
+    birthday = text
+    
+    # Если это регистрация студента (он вводит сам)
+    if 'link_student_id' in data:
+        student_id = data['link_student_id']
+        async with async_session() as session:
+            await session.execute(update(Student).where(Student.id == student_id).values(birthday=birthday))
+            await session.commit()
+            result = await session.execute(select(Student).where(Student.id == student_id))
+            student = result.scalars().first()
+            
+        await message.answer(f"Дата рождения сохранена!")
+        await message.answer(f"Отлично! Теперь ты в системе как {student.name}.\nНастроим уведомления?", reply_markup=get_notify_keyboard())
+    else:
+        # Если это админ добавляет
+        name = data['name']
+        async with async_session() as session:
+            session.add(Student(name=name, birthday=birthday))
+            await session.commit()
+        await message.answer(f"Студент {name} добавлен с ДР {birthday}!", reply_markup=get_main_keyboard(is_admin=True))
+        
     await state.clear()
 
 @dp.callback_query(F.data == 'admin_del_student')
@@ -1190,7 +1238,7 @@ async def register_student(callback: types.CallbackQuery):
         await callback.answer()
 
 @dp.callback_query(F.data.startswith('link_'))
-async def link_account(callback: types.CallbackQuery):
+async def link_account(callback: types.CallbackQuery, state: FSMContext):
     try:
         student_id = int(callback.data.split('_')[1])
         user_id = str(callback.from_user.id)
@@ -1199,7 +1247,14 @@ async def link_account(callback: types.CallbackQuery):
             await session.commit()
             result = await session.execute(select(Student).where(Student.id == student_id))
             student = result.scalars().first()
-        await callback.message.edit_text(f"Отлично! Теперь ты в системе как {student.name}.\nНастроим уведомления?", reply_markup=get_notify_keyboard())
+            
+        # Если даты рождения нет - просим ввести
+        if not student.birthday:
+            await state.update_data(link_student_id=student_id)
+            await callback.message.edit_text(f"Отлично! Ты в системе как {student.name}.\n\nУ тебя не указана дата рождения. Напиши её в формате **ДД.ММ** (например, 05.11):")
+            await state.set_state(AddStudent.birthday_input)
+        else:
+            await callback.message.edit_text(f"Отлично! Теперь ты в системе как {student.name}.\nНастроим уведомления?", reply_markup=get_notify_keyboard())
         await callback.answer()
     except Exception as e:
         await callback.message.answer(f"Ошибка при привязке: {e}")
