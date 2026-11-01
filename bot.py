@@ -133,6 +133,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text='❌ Удалить студента', callback_data='admin_del_student')],
         [InlineKeyboardButton(text='📅 Добавить пару', callback_data='admin_add_schedule')],
         [InlineKeyboardButton(text='🗑 Удалить пару', callback_data='admin_del_schedule')],
+        [InlineKeyboardButton(text='📝 Удалить ДЗ', callback_data='admin_del_hw')], # НОВАЯ КНОПКА
         [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
     ])
 
@@ -281,6 +282,41 @@ async def save_homework(message: types.Message, state: FSMContext):
         
     await message.answer("✅ ДЗ успешно сохранено!", reply_markup=get_main_keyboard(is_admin=True))
     await state.clear()
+
+# --- УДАЛЕНИЕ ДЗ (НОВОЕ) ---
+@dp.callback_query(F.data == 'admin_del_hw')
+async def admin_del_hw(callback: types.CallbackQuery):
+    async with async_session() as session:
+        # Получаем список ДЗ с привязкой к расписанию
+        result = await session.execute(
+            select(Homework, ScheduleItem)
+            .join(ScheduleItem, Homework.schedule_id == ScheduleItem.id)
+            .order_by(ScheduleItem.date_str, ScheduleItem.lesson_num)
+        )
+        records = result.all()
+    
+    if not records:
+        await callback.message.edit_text("Список ДЗ пуст.", reply_markup=get_admin_keyboard()); return
+        
+    buttons = []
+    for hw, sched in records:
+        # Обрезаем текст ДЗ для кнопки
+        preview = hw.content[:15] + "..." if len(hw.content) > 15 else hw.content
+        btn_text = f"🗑 {sched.date_str} | {sched.lesson_num}. {sched.subject} ({preview})"
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"del_hw_{hw.id}")])
+        
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    await callback.message.edit_text("Нажми на ДЗ, чтобы удалить его:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('del_hw_'))
+async def process_del_hw(callback: types.CallbackQuery):
+    hw_id = int(callback.data.split('_')[2])
+    async with async_session() as session:
+        await session.execute(delete(Homework).where(Homework.id == hw_id))
+        await session.commit()
+    await callback.message.answer("✅ ДЗ удалено.")
+    await admin_del_hw(callback) # Обновляем список
 
 # --- ПРОСМОТР ДЗ СТУДЕНТАМИ ---
 @dp.callback_query(F.data.startswith('viewsub_'))
@@ -616,7 +652,7 @@ async def web_server():
 async def main():
     await init_db()
     asyncio.create_task(web_server())
-    print('Бот запущен с ДЗ!')
+    print('Бот запущен с удалением ДЗ!')
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
