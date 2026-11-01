@@ -513,6 +513,14 @@ async def show_group(message: types.Message):
     await message.answer(text, parse_mode="Markdown", reply_markup=get_group_keyboard())
 
 # --- ЗАМЕТКИ ---
+@dp.message(F.text.in_({'📝 Заметки', '📝 Заметки'}))
+async def notes_menu(message: types.Message):
+    buttons = [
+        [InlineKeyboardButton(text="👤 Личные заметки", callback_data="notes_personal")],
+        [InlineKeyboardButton(text="📚 Заметки по предметам", callback_data="notes_subjects")]
+    ]
+    await message.answer("Выбери тип заметок:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
 @dp.callback_query(F.data == 'notes_personal')
 async def show_personal_notes(callback: types.CallbackQuery):
     user_id = str(callback.from_user.id)
