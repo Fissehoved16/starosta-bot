@@ -24,8 +24,15 @@ class Student(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String)
     birthday = Column(String)
-    telegram_id = Column(String, nullable=True) # Телеграм ID студента
-    notify_all = Column(Boolean, default=False) # Хочет ли получать все ДР
+    telegram_id = Column(String, nullable=True)
+    notify_all = Column(Boolean, default=False)
+
+class ScheduleFile(Base):
+    __tablename__ = 'schedule_files'
+    id = Column(Integer, primary_key=True)
+    file_id = Column(String)
+    file_type = Column(String)
+    date_added = Column(String)
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
@@ -35,6 +42,7 @@ async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession
 
 async def init_db():
     async with engine.begin() as conn:
+        # Таблица студентов
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS students_v3 (
                 id SERIAL PRIMARY KEY,
@@ -44,7 +52,17 @@ async def init_db():
                 notify_all BOOLEAN DEFAULT FALSE
             );
         """))
-        print("Таблица students_v3 с текстовым ID готова!")
+        # Таблица расписания
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS schedule_files (
+                id SERIAL PRIMARY KEY,
+                file_id VARCHAR,
+                file_type VARCHAR,
+                date_added VARCHAR
+            );
+        """))
+        print("База данных готова!")
+
 # --- БОТ ---
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -157,21 +175,15 @@ async def show_group(message: types.Message):
 async def register_student(callback: types.CallbackQuery):
     try:
         user_id = callback.from_user.id
-        print(f"Пользователь {user_id} пытается зарегистрироваться")
-        
         async with async_session() as session:
-            # Ищем, есть ли уже такой студент в базе по ID
             result = await session.execute(select(Student).where(Student.telegram_id == str(user_id)))
             existing_student = result.scalars().first()
             
             if existing_student:
                 await callback.message.answer(f"Ты уже зарегистрирован(а) как {existing_student.name}!")
             else:
-                # Находим всех студентов без привязки к ТГ
                 result = await session.execute(select(Student).where(Student.telegram_id.is_(None)))
                 unlinked = result.scalars().all()
-                
-                print(f"Найдено свободных студентов: {len(unlinked)}")
                 
                 if not unlinked:
                     await callback.message.answer("Нет свободных студентов в списке. Обратись к старосте!")
@@ -183,20 +195,19 @@ async def register_student(callback: types.CallbackQuery):
                     await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
-        print(f"ОШИБКА В РЕГИСТРАЦИИ: {e}")
         await callback.message.answer(f"Произошла ошибка: {e}")
         await callback.answer()
+
 @dp.callback_query(F.data.startswith('link_'))
 async def link_account(callback: types.CallbackQuery):
     try:
         student_id = int(callback.data.split('_')[1])
-        user_id = str(callback.from_user.id) # Сразу делаем строкой!
+        user_id = str(callback.from_user.id)
         
         async with async_session() as session:
             await session.execute(update(Student).where(Student.id == student_id).values(telegram_id=user_id))
             await session.commit()
             
-            # Получаем имя
             result = await session.execute(select(Student).where(Student.id == student_id))
             student = result.scalars().first()
             
@@ -208,21 +219,13 @@ async def link_account(callback: types.CallbackQuery):
     except Exception as e:
         await callback.message.answer(f"Ошибка при привязке: {e}")
         await callback.answer()
-        
-        # Получаем имя
-        result = await session.execute(select(Student).where(Student.id == student_id))
-        student = result.scalars().first()
-        
-    await callback.message.edit_text(f"Отлично! Теперь ты в системе как {student.name}.\nНастроим уведомления?", 
-                                     reply_markup=get_notify_keyboard())
-    await callback.answer()
 
 # --- НАСТРОЙКИ УВЕДОМЛЕНИЙ ---
 @dp.callback_query(F.data.startswith('notify_all_'))
 async def set_notification(callback: types.CallbackQuery):
     try:
         action = callback.data.split('_')[2]
-        user_id = str(callback.from_user.id) # Тоже строка
+        user_id = str(callback.from_user.id)
         notify_value = True if action == 'on' else False
         
         async with async_session() as session:
@@ -235,11 +238,50 @@ async def set_notification(callback: types.CallbackQuery):
     except Exception as e:
         await callback.message.answer(f"Ошибка с уведомлениями: {e}")
         await callback.answer()
-# --- ЗАГЛУШКИ ---
+
+# --- РАСПИСАНИЕ ---
 @dp.message(F.text == '📅 Расписание')
 async def schedule(message: types.Message):
-    await message.answer("📅 Здесь скоро появится расписание.")
+    async with async_session() as session:
+        result = await session.execute(select(ScheduleFile).order_by(ScheduleFile.id.desc()))
+        file_record = result.scalars().first()
+        
+    if not file_record:
+        await message.answer("📅 Расписание пока не загружено. Староста скоро его добавит!")
+        return
+        
+    if file_record.file_type == 'photo':
+        await message.answer_photo(photo=file_record.file_id, caption=f"📅 Актуальное расписание (от {file_record.date_added})")
+    else:
+        await message.answer_document(document=file_record.file_id, caption=f"📅 Актуальное расписание (от {file_record.date_added})")
 
+# Обработчик загрузки файлов (только для старосты)
+@dp.message(F.photo | F.document)
+async def handle_schedule_upload(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return 
+    
+    file_id = None
+    file_type = None
+    
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = 'photo'
+    elif message.document:
+        file_id = message.document.file_id
+        file_type = 'document'
+        
+    if file_id:
+        async with async_session() as session:
+            await session.execute(text("DELETE FROM schedule_files"))
+            
+            new_file = ScheduleFile(file_id=file_id, file_type=file_type, date_added=str(datetime.now().date()))
+            session.add(new_file)
+            await session.commit()
+            
+        await message.answer("✅ Расписание обновлено! Студенты увидят его в разделе «📅 Расписание».")
+
+# --- ЗАГЛУШКИ ---
 @dp.message(F.text == '📚 ДЗ и заметки')
 async def homework(message: types.Message):
     await message.answer("📚 Здесь скоро появится ДЗ.")
@@ -261,11 +303,9 @@ async def web_server():
 async def birthday_checker():
     while True:
         now = datetime.now()
-        # Проверяем в 9:00 утра
         if now.hour == 9 and now.minute == 0:
             today = now.strftime("%d.%m")
             async with async_session() as session:
-                # Ищем студентов, у кого сегодня ДР
                 result = await session.execute(select(Student).where(Student.birthday.like(f"{today}%")))
                 bday_people = result.scalars().all()
                 
@@ -274,10 +314,8 @@ async def birthday_checker():
                     for p in bday_people:
                         text += f"• {p.name} 🎂\n"
                     
-                    # Отправляем админу
                     await bot.send_message(ADMIN_ID, text, parse_mode="Markdown")
                     
-                    # Отправляем тем, кто подписался на ВСЕ ДР
                     result = await session.execute(select(Student).where(Student.notify_all == True))
                     subscribers = result.scalars().all()
                     for sub in subscribers:
@@ -286,14 +324,14 @@ async def birthday_checker():
                                 await bot.send_message(sub.telegram_id, text, parse_mode="Markdown")
                             except:
                                 pass
-            await asyncio.sleep(60) # Ждем минуту, чтобы не спамить
-        await asyncio.sleep(30) # Проверяем каждые 30 секунд
+            await asyncio.sleep(60)
+        await asyncio.sleep(30)
 
 async def main():
     await init_db()
     asyncio.create_task(web_server())
-    asyncio.create_task(birthday_checker()) # Запускаем проверку ДР в фоне
-    print('Бот запущен в облаке с базой данных и уведомлениями!')
+    asyncio.create_task(birthday_checker())
+    print('Бот запущен в облаке с базой данных и расписанием!')
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
