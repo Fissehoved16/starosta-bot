@@ -35,13 +35,16 @@ async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession
 
 async def init_db():
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # Автоматически добавляем новые столбцы, если их нет (для старых версий базы)
-        try:
-            await conn.execute(text("ALTER TABLE students ADD COLUMN telegram_id INTEGER"))
-            await conn.execute(text("ALTER TABLE students ADD COLUMN notify_all BOOLEAN DEFAULT FALSE"))
-        except:
-            pass
+        # Принудительно создаем таблицу с нужными типами, если её нет
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS students (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR,
+                birthday VARCHAR,
+                telegram_id BIGINT,
+                notify_all BOOLEAN DEFAULT FALSE
+            );
+        """))
 
 # --- БОТ ---
 bot = Bot(token=TOKEN)
