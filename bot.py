@@ -20,28 +20,17 @@ ADMIN_ID = 8493824882
 
 # --- ШАБЛОНЫ ВРЕМЕНИ ---
 TIME_SLOTS = {
-    1: "09:00 - 10:30",
-    2: "10:40 - 12:10",
-    3: "13:00 - 14:30",
-    4: "14:40 - 16:10",
-    5: "16:20 - 17:50",
-    6: "18:00 - 19:30",
+    1: "09:00 - 10:30", 2: "10:40 - 12:10", 3: "13:00 - 14:30",
+    4: "14:40 - 16:10", 5: "16:20 - 17:50", 6: "18:00 - 19:30",
 }
 
-# --- ШАБЛОНЫ ПРЕДМЕТОВ (ДОБАВЛЯЙ СЮДА СВОИ) ---
+# --- ШАБЛОНЫ ПРЕДМЕТОВ ---
 SUBJECTS = [
-    "История России",
-    "Информатика и программирование",
-    "Основы Российской государственности",
-    "Математический анализ",
-    "Дискретная математика",
-    "Алгебра и теория чисел",
-    "Базовая физическая культура",
-    "Архитектура вычислительных систем и компьютерных систем",
-    "Иностранный язык",
-    "Факультатив:система рельефно-точечного шрифта",
-    "Безопастность жизнедеятельности",
-    "Психологический тренинг рублево"
+    "История России", "Информатика и программирование", "Основы Российской государственности",
+    "Математический анализ", "Дискретная математика", "Алгебра и теория чисел",
+    "Базовая физическая культура", "Архитектура вычислительных систем и компьютерных систем",
+    "Иностранный язык", "Факультатив:система рельефно-точечного шрифта",
+    "Безопастность жизнедеятельности", "Психологический тренинг рублево"
 ]
 
 LESSON_TYPES = ["Лекция", "Семинар", "Практика"]
@@ -86,6 +75,12 @@ class CompletedHomework(Base):
     student_id = Column(Integer)
     homework_id = Column(Integer)
 
+class Note(Base):
+    __tablename__ = 'notes'
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer) # Кому принадлежит заметка
+    content = Column(String) # Текст заметки
+
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 
@@ -98,6 +93,7 @@ async def init_db():
         await conn.execute(text("CREATE TABLE IF NOT EXISTS schedule_dates (id SERIAL PRIMARY KEY, date_str VARCHAR, lesson_num INTEGER, subject VARCHAR, lesson_type VARCHAR, time_start VARCHAR, time_end VARCHAR);"))
         await conn.execute(text("CREATE TABLE IF NOT EXISTS homeworks_v1 (id SERIAL PRIMARY KEY, schedule_id INTEGER, content VARCHAR, file_id VARCHAR);"))
         await conn.execute(text("CREATE TABLE IF NOT EXISTS completed_homeworks (id SERIAL PRIMARY KEY, student_id INTEGER, homework_id INTEGER);"))
+        await conn.execute(text("CREATE TABLE IF NOT EXISTS notes (id SERIAL PRIMARY KEY, student_id INTEGER, content VARCHAR);"))
         print("База данных готова!")
 
 # --- БОТ ---
@@ -115,11 +111,14 @@ class AddSchedule(StatesGroup):
 class AddHomework(StatesGroup):
     waiting_for_content = State()
 
+class AddNote(StatesGroup):
+    waiting_for_content = State()
+
 # --- КЛАВИАТУРЫ ---
 def get_main_keyboard(is_admin=False):
     keyboard = [
         [KeyboardButton(text='📅 Расписание'), KeyboardButton(text='📚 ДЗ')],
-        [KeyboardButton(text='👥 Список группы')],
+        [KeyboardButton(text='👥 Список группы'), KeyboardButton(text='📝 Заметки')],
     ]
     if is_admin:
         keyboard.append([KeyboardButton(text='⚙️ Админ-панель')])
@@ -234,6 +233,7 @@ async def quick_homework_start(message: types.Message, state: FSMContext):
     for item in items:
         emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
         buttons.append([InlineKeyboardButton(text=f"{item.lesson_num}. {emoji} {item.subject}", callback_data=f"addhw_{item.id}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
     await message.answer(f"К какой паре на {date_str} добавить ДЗ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 # --- ДОБАВЛЕНИЕ ДЗ ---
@@ -241,7 +241,8 @@ async def quick_homework_start(message: types.Message, state: FSMContext):
 async def ask_homework(callback: types.CallbackQuery, state: FSMContext):
     schedule_id = int(callback.data.split('_')[1])
     await state.update_data(schedule_id=schedule_id)
-    await callback.message.answer("Отправь мне текст ДЗ или прикрепи файл (фото/документ):")
+    buttons = [[InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")]]
+    await callback.message.edit_text("Отправь мне текст ДЗ или прикрепи файл (фото/документ):", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(AddHomework.waiting_for_content)
     await callback.answer()
 
@@ -492,6 +493,90 @@ async def process_del_student(callback: types.CallbackQuery):
         await session.commit()
     await admin_del_student(callback)
 
+# --- СПИСОК ГРУППЫ ---
+@dp.message(F.text == '👥 Список группы')
+async def show_group(message: types.Message):
+    async with async_session() as session:
+        result = await session.execute(select(Student).order_by(Student.name))
+        students = result.scalars().all()
+    if not students:
+        await message.answer("Список пуст."); return
+    text = "👥 **Список группы:**\n\n"
+    for s in students:
+        status = "✅" if s.telegram_id else "❌"
+        text += f"• {s.name} — 🎂 {s.birthday} (в боте: {status})\n"
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_group_keyboard())
+
+# --- ЗАМЕТКИ ---
+@dp.message(F.text == '📝 Заметки')
+async def notes_menu(message: types.Message):
+    user_id = str(message.from_user.id)
+    async with async_session() as session:
+        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+        student = result.scalars().first()
+        
+    if not student:
+        await message.answer("Ты не зарегистрирован в боте. Нажми 'Список группы' и зарегистрируйся.")
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(Note).where(Note.student_id == student.id))
+        notes = result.scalars().all()
+        
+    text = "📝 **Твои заметки:**\n\n"
+    buttons = []
+    if not notes:
+        text += "У тебя пока нет заметок."
+    else:
+        for note in notes:
+            text += f"• {note.content}\n"
+            buttons.append([InlineKeyboardButton(text=f"❌ Удалить: {note.content[:15]}...", callback_data=f"del_note_{note.id}")])
+            
+    buttons.append([InlineKeyboardButton(text="➕ Добавить заметку", callback_data="add_note")])
+    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data == 'add_note')
+async def add_note_start(callback: types.CallbackQuery, state: FSMContext):
+    buttons = [[InlineKeyboardButton(text="🔙 Отмена", callback_data="notes_cancel")]]
+    await callback.message.edit_text("Напиши текст заметки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await state.set_state(AddNote.waiting_for_content)
+    await callback.answer()
+
+@dp.message(AddNote.waiting_for_content)
+async def save_note(message: types.Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    content = message.text
+    
+    async with async_session() as session:
+        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+        student = result.scalars().first()
+        
+        if student:
+            session.add(Note(student_id=student.id, content=content))
+            await session.commit()
+            
+    await message.answer("✅ Заметка добавлена!")
+    await state.clear()
+    await notes_menu(message) # Возвращаемся к заметкам
+
+@dp.callback_query(F.data == 'notes_cancel')
+async def notes_cancel(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    await callback.message.answer("Действие отменено.")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('del_note_'))
+async def delete_note(callback: types.CallbackQuery):
+    note_id = int(callback.data.split('_')[2])
+    async with async_session() as session:
+        await session.execute(delete(Note).where(Note.id == note_id))
+        await session.commit()
+    await callback.message.answer("Заметка удалена.")
+    await callback.message.delete()
+    await notes_menu(callback.message)
+    await callback.answer()
+
 # --- ДОБАВЛЕНИЕ ПАРЫ ---
 @dp.callback_query(F.data == 'admin_add_schedule')
 async def admin_add_schedule(callback: types.CallbackQuery, state: FSMContext):
@@ -632,7 +717,20 @@ async def back_to_calendar(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери дату, чтобы посмотреть расписание:", reply_markup=kb)
     await callback.answer()
 
-# --- СПИСОК ГРУППЫ И РЕГИСТРАЦИЯ ---
+# --- СПИСОК ГРУППЫ ---
+@dp.message(F.text == '👥 Список группы')
+async def show_group(message: types.Message):
+    async with async_session() as session:
+        result = await session.execute(select(Student).order_by(Student.name))
+        students = result.scalars().all()
+    if not students:
+        await message.answer("Список пуст."); return
+    text = "👥 **Список группы:**\n\n"
+    for s in students:
+        status = "✅" if s.telegram_id else "❌"
+        text += f"• {s.name} — 🎂 {s.birthday} (в боте: {status})\n"
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_group_keyboard())
+
 @dp.callback_query(F.data == 'reg_student')
 async def register_student(callback: types.CallbackQuery):
     try:
@@ -707,7 +805,7 @@ async def web_server():
 async def main():
     await init_db()
     asyncio.create_task(web_server())
-    print('Бот запущен с ДЗ и галочками выполнения!')
+    print('Бот запущен!')
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
