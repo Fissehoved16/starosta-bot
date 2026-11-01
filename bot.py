@@ -153,32 +153,37 @@ async def show_group(message: types.Message):
 # --- РЕГИСТРАЦИЯ СТУДЕНТА ---
 @dp.callback_query(F.data == 'reg_student')
 async def register_student(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    user_name = callback.from_user.first_name
-    
-    async with async_session() as session:
-        # Ищем, есть ли уже такой студент в базе по ID (чтобы не дублировать)
-        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
-        existing_student = result.scalars().first()
+    try:
+        user_id = callback.from_user.id
+        print(f"Пользователь {user_id} пытается зарегистрироваться")
         
-        if existing_student:
-            await callback.message.answer(f"Ты уже зарегистрирован(а) как {existing_student.name}!")
-        else:
-            # Находим всех студентов без привязки к ТГ
-            result = await session.execute(select(Student).where(Student.telegram_id.is_(None)))
-            unlinked = result.scalars().all()
+        async with async_session() as session:
+            # Ищем, есть ли уже такой студент в базе по ID
+            result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+            existing_student = result.scalars().first()
             
-            if not unlinked:
-                await callback.message.answer("Нет свободных студентов в списке. Обратись к старосте!")
+            if existing_student:
+                await callback.message.answer(f"Ты уже зарегистрирован(а) как {existing_student.name}!")
             else:
-                # Просим старосту или студента выбрать себя (упрощенно: ищем по имени)
-                text = "Нажми на свое имя в списке, чтобы привязать аккаунт:\n\n"
-                buttons = []
-                for st in unlinked:
-                    buttons.append([InlineKeyboardButton(text=st.name, callback_data=f"link_{st.id}")])
-                await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
-
+                # Находим всех студентов без привязки к ТГ
+                result = await session.execute(select(Student).where(Student.telegram_id.is_(None)))
+                unlinked = result.scalars().all()
+                
+                print(f"Найдено свободных студентов: {len(unlinked)}")
+                
+                if not unlinked:
+                    await callback.message.answer("Нет свободных студентов в списке. Обратись к старосте!")
+                else:
+                    text = "Нажми на свое имя в списке, чтобы привязать аккаунт:\n\n"
+                    buttons = []
+                    for st in unlinked:
+                        buttons.append([InlineKeyboardButton(text=st.name, callback_data=f"link_{st.id}")])
+                    await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        print(f"ОШИБКА В РЕГИСТРАЦИИ: {e}")
+        await callback.message.answer(f"Произошла ошибка: {e}")
+        await callback.answer()
 @dp.callback_query(F.data.startswith('link_'))
 async def link_account(callback: types.CallbackQuery):
     student_id = int(callback.data.split('_')[1])
