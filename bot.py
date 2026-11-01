@@ -520,7 +520,11 @@ async def att_calendar_navigate(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith('att_'))
 async def process_att_date(callback: types.CallbackQuery):
     parts = callback.data.split('_')
-    # Проверяем, что это действительно дата (4 части), а не что-то другое
+    
+    # Если это сигнал переключения (toggle) или что-то другое, пропускаем
+    if parts[1] == 'toggle':
+        return
+        
     if len(parts) != 4:
         return
         
@@ -591,15 +595,12 @@ async def toggle_attendance(callback: types.CallbackQuery):
         student_id = int(parts[3])
         
         async with async_session() as session:
-            # Проверяем, есть ли уже отметка
             result = await session.execute(select(Attendance).where(Attendance.schedule_id == schedule_id, Attendance.student_id == student_id))
             existing = result.scalars().first()
             
             if existing:
-                # Если есть — удаляем
                 await session.execute(delete(Attendance).where(Attendance.id == existing.id))
             else:
-                # Если нет — добавляем
                 session.add(Attendance(schedule_id=schedule_id, student_id=student_id))
             await session.commit()
             
