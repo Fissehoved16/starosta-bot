@@ -80,6 +80,12 @@ class Homework(Base):
     content = Column(String)
     file_id = Column(String, nullable=True)
 
+class CompletedHomework(Base):
+    __tablename__ = 'completed_homeworks'
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer)
+    homework_id = Column(Integer)
+
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 
@@ -89,17 +95,9 @@ async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession
 async def init_db():
     async with engine.begin() as conn:
         await conn.execute(text("CREATE TABLE IF NOT EXISTS students_v3 (id SERIAL PRIMARY KEY, name VARCHAR, birthday VARCHAR, telegram_id VARCHAR, notify_all BOOLEAN DEFAULT FALSE);"))
-        await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS schedule_dates (
-                id SERIAL PRIMARY KEY, date_str VARCHAR, lesson_num INTEGER, 
-                subject VARCHAR, lesson_type VARCHAR, time_start VARCHAR, time_end VARCHAR
-            );
-        """))
-        await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS homeworks_v1 (
-                id SERIAL PRIMARY KEY, schedule_id INTEGER, content VARCHAR, file_id VARCHAR
-            );
-        """))
+        await conn.execute(text("CREATE TABLE IF NOT EXISTS schedule_dates (id SERIAL PRIMARY KEY, date_str VARCHAR, lesson_num INTEGER, subject VARCHAR, lesson_type VARCHAR, time_start VARCHAR, time_end VARCHAR);"))
+        await conn.execute(text("CREATE TABLE IF NOT EXISTS homeworks_v1 (id SERIAL PRIMARY KEY, schedule_id INTEGER, content VARCHAR, file_id VARCHAR);"))
+        await conn.execute(text("CREATE TABLE IF NOT EXISTS completed_homeworks (id SERIAL PRIMARY KEY, student_id INTEGER, homework_id INTEGER);"))
         print("База данных готова!")
 
 # --- БОТ ---
@@ -120,7 +118,7 @@ class AddHomework(StatesGroup):
 # --- КЛАВИАТУРЫ ---
 def get_main_keyboard(is_admin=False):
     keyboard = [
-        [KeyboardButton(text='📅 Расписание')],
+        [KeyboardButton(text='📅 Расписание'), KeyboardButton(text='📚 ДЗ')],
         [KeyboardButton(text='👥 Список группы')],
     ]
     if is_admin:
@@ -133,7 +131,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text='❌ Удалить студента', callback_data='admin_del_student')],
         [InlineKeyboardButton(text='📅 Добавить пару', callback_data='admin_add_schedule')],
         [InlineKeyboardButton(text='🗑 Удалить пару', callback_data='admin_del_schedule')],
-        [InlineKeyboardButton(text='📝 Удалить ДЗ', callback_data='admin_del_hw')], # НОВАЯ КНОПКА
+        [InlineKeyboardButton(text='📝 Удалить ДЗ', callback_data='admin_del_hw')],
         [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
     ])
 
@@ -207,49 +205,38 @@ async def admin_back(callback: types.CallbackQuery, state: FSMContext):
 # --- БЫСТРЫЙ ВВОД ДЗ ---
 @dp.message(F.text.regexp(r'(?i)^\d{1,2}\s+[а-яА-Я]+\s+дз$'))
 async def quick_homework_start(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
+    if message.from_user.id != ADMIN_ID: return
     date_text = message.text.lower().replace("дз", "").strip()
     now = datetime.now()
     year = now.year
-    
     months = {
         "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
         "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12
     }
-    
     match = re.search(r'(\d{1,2})\s+([а-яА-Я]+)', date_text)
     if not match:
         await message.answer("Не смог распознать дату. Попробуй в формате '3 ноября дз'.")
         return
-        
     day = int(match.group(1))
     month_name = match.group(2).lower()
-    
     if month_name not in months:
         await message.answer("Не знаю такой месяц. Попробуй '3 ноября дз'.")
         return
-        
     month = months[month_name]
     date_str = f"{day:02d}.{month:02d}.{year}"
-    
     async with async_session() as session:
         result = await session.execute(select(ScheduleItem).where(ScheduleItem.date_str == date_str).order_by(ScheduleItem.lesson_num))
         items = result.scalars().all()
-        
     if not items:
         await message.answer(f"На {date_str} нет пар. Сначала добавь расписание на этот день.")
         return
-        
     buttons = []
     for item in items:
         emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
         buttons.append([InlineKeyboardButton(text=f"{item.lesson_num}. {emoji} {item.subject}", callback_data=f"addhw_{item.id}")])
-    
     await message.answer(f"К какой паре на {date_str} добавить ДЗ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-# --- ДОБАВЛЕНИЕ ДЗ (ИЗ РАСПИСАНИЯ) ---
+# --- ДОБАВЛЕНИЕ ДЗ ---
 @dp.callback_query(F.data.startswith('addhw_'))
 async def ask_homework(callback: types.CallbackQuery, state: FSMContext):
     schedule_id = int(callback.data.split('_')[1])
@@ -262,10 +249,8 @@ async def ask_homework(callback: types.CallbackQuery, state: FSMContext):
 async def save_homework(message: types.Message, state: FSMContext):
     data = await state.get_data()
     schedule_id = data['schedule_id']
-    
     content = ""
     file_id = None
-    
     if message.text:
         content = message.text
     elif message.photo:
@@ -274,37 +259,26 @@ async def save_homework(message: types.Message, state: FSMContext):
     elif message.document:
         file_id = message.document.file_id
         content = message.caption if message.caption else message.document.file_name
-        
     async with async_session() as session:
         new_hw = Homework(schedule_id=schedule_id, content=content, file_id=file_id)
         session.add(new_hw)
         await session.commit()
-        
     await message.answer("✅ ДЗ успешно сохранено!", reply_markup=get_main_keyboard(is_admin=True))
     await state.clear()
 
-# --- УДАЛЕНИЕ ДЗ (НОВОЕ) ---
+# --- УДАЛЕНИЕ ДЗ ---
 @dp.callback_query(F.data == 'admin_del_hw')
 async def admin_del_hw(callback: types.CallbackQuery):
     async with async_session() as session:
-        # Получаем список ДЗ с привязкой к расписанию
-        result = await session.execute(
-            select(Homework, ScheduleItem)
-            .join(ScheduleItem, Homework.schedule_id == ScheduleItem.id)
-            .order_by(ScheduleItem.date_str, ScheduleItem.lesson_num)
-        )
+        result = await session.execute(select(Homework, ScheduleItem).join(ScheduleItem, Homework.schedule_id == ScheduleItem.id).order_by(ScheduleItem.date_str, ScheduleItem.lesson_num))
         records = result.all()
-    
     if not records:
         await callback.message.edit_text("Список ДЗ пуст.", reply_markup=get_admin_keyboard()); return
-        
     buttons = []
     for hw, sched in records:
-        # Обрезаем текст ДЗ для кнопки
         preview = hw.content[:15] + "..." if len(hw.content) > 15 else hw.content
         btn_text = f"🗑 {sched.date_str} | {sched.lesson_num}. {sched.subject} ({preview})"
         buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"del_hw_{hw.id}")])
-        
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     await callback.message.edit_text("Нажми на ДЗ, чтобы удалить его:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
@@ -314,24 +288,142 @@ async def process_del_hw(callback: types.CallbackQuery):
     hw_id = int(callback.data.split('_')[2])
     async with async_session() as session:
         await session.execute(delete(Homework).where(Homework.id == hw_id))
+        await session.execute(delete(CompletedHomework).where(CompletedHomework.homework_id == hw_id))
         await session.commit()
     await callback.message.answer("✅ ДЗ удалено.")
-    await admin_del_hw(callback) # Обновляем список
+    await admin_del_hw(callback)
 
-# --- ПРОСМОТР ДЗ СТУДЕНТАМИ ---
+# --- НОВЫЙ РАЗДЕЛ ДЗ ДЛЯ ВСЕХ ---
+@dp.message(F.text == '📚 ДЗ')
+async def hw_menu(message: types.Message):
+    now = datetime.now()
+    kb = get_calendar_keyboard(now.year, now.month, action="hwcal")
+    await message.answer("Выбери дату, чтобы посмотреть ДЗ на этот день:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith('hwcalnav_'))
+async def hw_calendar_navigate(callback: types.CallbackQuery):
+    parts = callback.data.split('_')
+    year, month = int(parts[1]), int(parts[2])
+    kb = get_calendar_keyboard(year, month, action="hwcal")
+    await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
+
+async def render_hw_list(callback_or_message, date_str, is_edit=True):
+    user_id = str(callback_or_message.from_user.id)
+    async with async_session() as session:
+        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+        student = result.scalars().first()
+        
+    if not student and callback_or_message.from_user.id != ADMIN_ID:
+        text = "Ты не зарегистрирован в боте. Нажми 'Список группы' и зарегистрируйся."
+        if is_edit: await callback_or_message.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="hwcalnav_back")]]))
+        else: await callback_or_message.answer(text)
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(ScheduleItem).where(ScheduleItem.date_str == date_str).order_by(ScheduleItem.lesson_num))
+        items = result.scalars().all()
+        
+    if not items:
+        text = f"На {date_str} пар и ДЗ нет."
+        if is_edit: await callback_or_message.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="hwcalnav_back")]]))
+        else: await callback_or_message.answer(text)
+        return
+        
+    text = f"📚 **ДЗ на {date_str}**\n\n"
+    buttons = []
+    for item in items:
+        emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
+        async with async_session() as session:
+            result = await session.execute(select(Homework).where(Homework.schedule_id == item.id))
+            hws = result.scalars().all()
+            
+        if hws:
+            text += f"{emoji} **{item.subject}**\n"
+            for hw in hws:
+                is_completed = False
+                if student:
+                    async with async_session() as session:
+                        res_comp = await session.execute(select(CompletedHomework).where(CompletedHomework.student_id == student.id, CompletedHomework.homework_id == hw.id))
+                        if res_comp.scalars().first(): is_completed = True
+                            
+                if is_completed:
+                    text += f"  ~~{hw.content}~~ (сделано)\n"
+                    buttons.append([InlineKeyboardButton(text=f"❌ Отменить: {hw.content[:20]}", callback_data=f"uncheck_{hw.id}_{date_str}")])
+                else:
+                    text += f"  • {hw.content}\n"
+                    buttons.append([InlineKeyboardButton(text=f"✅ Сделано: {hw.content[:20]}", callback_data=f"check_{hw.id}_{date_str}")])
+                    
+                if hw.file_id:
+                    buttons.append([InlineKeyboardButton(text=f"📎 Файл к {hw.content[:15]}", callback_data=f"sendfile_{hw.id}")])
+        else:
+            text += f"{emoji} {item.subject} — *ДЗ нет*\n"
+        text += "\n"
+        
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="hwcalnav_back")])
+    if is_edit:
+        await callback_or_message.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    else:
+        await callback_or_message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data.startswith('hwcal_'))
+async def process_hw_date(callback: types.CallbackQuery):
+    parts = callback.data.split('_')
+    year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
+    date_str = f"{day:02d}.{month:02d}.{year}"
+    await render_hw_list(callback, date_str, is_edit=True)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('check_'))
+async def mark_hw_done(callback: types.CallbackQuery):
+    parts = callback.data.split('_')
+    hw_id = int(parts[1])
+    date_str = parts[2]
+    user_id = str(callback.from_user.id)
+    async with async_session() as session:
+        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+        student = result.scalars().first()
+        if student:
+            res = await session.execute(select(CompletedHomework).where(CompletedHomework.student_id == student.id, CompletedHomework.homework_id == hw_id))
+            if not res.scalars().first():
+                session.add(CompletedHomework(student_id=student.id, homework_id=hw_id))
+                await session.commit()
+    await render_hw_list(callback, date_str, is_edit=True)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('uncheck_'))
+async def mark_hw_undone(callback: types.CallbackQuery):
+    parts = callback.data.split('_')
+    hw_id = int(parts[1])
+    date_str = parts[2]
+    user_id = str(callback.from_user.id)
+    async with async_session() as session:
+        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+        student = result.scalars().first()
+        if student:
+            await session.execute(delete(CompletedHomework).where(CompletedHomework.student_id == student.id, CompletedHomework.homework_id == hw_id))
+            await session.commit()
+    await render_hw_list(callback, date_str, is_edit=True)
+    await callback.answer()
+
+@dp.callback_query(F.data == 'hwcalnav_back')
+async def back_to_hw_calendar(callback: types.CallbackQuery):
+    now = datetime.now()
+    kb = get_calendar_keyboard(now.year, now.month, action="hwcal")
+    await callback.message.edit_text("Выбери дату, чтобы посмотреть ДЗ на этот день:", reply_markup=kb)
+    await callback.answer()
+
+# --- ПРОСМОТР ДЗ ЧЕРЕЗ РАСПИСАНИЕ ---
 @dp.callback_query(F.data.startswith('viewsub_'))
 async def show_subject_details(callback: types.CallbackQuery):
     item_id = int(callback.data.split('_')[1])
     async with async_session() as session:
         result = await session.execute(select(ScheduleItem).where(ScheduleItem.id == item_id))
         item = result.scalars().first()
-        
         result = await session.execute(select(Homework).where(Homework.schedule_id == item_id))
         hws = result.scalars().all()
-    
     emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
     text = f"{emoji} **{item.subject}** ({item.lesson_type})\nДата: {item.date_str}\n\n"
-    
     buttons = []
     if not hws:
         text += "ДЗ пока нет."
@@ -341,12 +433,9 @@ async def show_subject_details(callback: types.CallbackQuery):
             text += f"• {hw.content}\n"
             if hw.file_id:
                 buttons.append([InlineKeyboardButton(text="📎 Прикрепленный файл", callback_data=f"sendfile_{hw.id}")])
-                
     if callback.from_user.id == ADMIN_ID:
-        buttons.append([InlineKeyboardButton(text="📝 Добавить/Изменить ДЗ", callback_data=f"addhw_{item.id}")])
-        
+        buttons.append([InlineKeyboardButton(text="📝 Добавить ДЗ", callback_data=f"addhw_{item.id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_{item.date_str[6:]}_{item.date_str[3:5]}_{item.date_str[:2]}")])
-    
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
@@ -356,12 +445,9 @@ async def send_hw_file(callback: types.CallbackQuery):
     async with async_session() as session:
         result = await session.execute(select(Homework).where(Homework.id == hw_id))
         hw = result.scalars().first()
-    
     if hw and hw.file_id:
-        try:
-            await callback.message.answer_document(document=hw.file_id)
-        except:
-            await callback.message.answer_photo(photo=hw.file_id)
+        try: await callback.message.answer_document(document=hw.file_id)
+        except: await callback.message.answer_photo(photo=hw.file_id)
     await callback.answer()
 
 # --- СТУДЕНТЫ ---
@@ -428,9 +514,7 @@ async def process_sched_date(callback: types.CallbackQuery, state: FSMContext):
     year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
     date_str = f"{day:02d}.{month:02d}.{year}"
     await state.update_data(date=date_str)
-    buttons = []
-    for num, time in TIME_SLOTS.items():
-        buttons.append([InlineKeyboardButton(text=f"{num} пара ({time})", callback_data=f"setnum_{num}")])
+    buttons = [[InlineKeyboardButton(text=f"{num} пара ({time})", callback_data=f"setnum_{num}")] for num, time in TIME_SLOTS.items()]
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
     await callback.message.edit_text(f"Дата: {date_str}\nВыбери номер пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(AddSchedule.num)
@@ -453,10 +537,7 @@ async def process_sched_subject(callback: types.CallbackQuery, state: FSMContext
     idx = int(callback.data.split('_')[1])
     subject = SUBJECTS[idx]
     await state.update_data(subject=subject)
-    buttons = []
-    for l_type in LESSON_TYPES:
-        emoji = TYPE_EMOJI.get(l_type, "")
-        buttons.append([InlineKeyboardButton(text=f"{emoji} {l_type}", callback_data=f"type_{l_type}")])
+    buttons = [[InlineKeyboardButton(text=f"{TYPE_EMOJI.get(l_type, '')} {l_type}", callback_data=f"type_{l_type}")] for l_type in LESSON_TYPES]
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
     await callback.message.edit_text(f"Предмет: {subject}\nВыбери тип пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
@@ -467,17 +548,10 @@ async def process_sched_type(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     time_slot = TIME_SLOTS[data['num']].split(' - ')
     async with async_session() as session:
-        new_item = ScheduleItem(
-            date_str=data['date'], lesson_num=data['num'], 
-            subject=data['subject'], lesson_type=lesson_type, 
-            time_start=time_slot[0], time_end=time_slot[1]
-        )
+        new_item = ScheduleItem(date_str=data['date'], lesson_num=data['num'], subject=data['subject'], lesson_type=lesson_type, time_start=time_slot[0], time_end=time_slot[1])
         session.add(new_item)
         await session.commit()
-    buttons = [
-        [InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="add_more_sched")],
-        [InlineKeyboardButton(text="✅ В админ-панель", callback_data="admin_back")]
-    ]
+    buttons = [[InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="add_more_sched")], [InlineKeyboardButton(text="✅ В админ-панель", callback_data="admin_back")]]
     await callback.message.edit_text(f"✅ Пара добавлена:\n{data['date']}, {data['num']} пара\n{data['subject']} ({lesson_type})", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.update_data(date=data['date']) 
     await callback.answer()
@@ -486,9 +560,7 @@ async def process_sched_type(callback: types.CallbackQuery, state: FSMContext):
 async def add_more_sched(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     date_str = data.get('date')
-    buttons = []
-    for num, time in TIME_SLOTS.items():
-        buttons.append([InlineKeyboardButton(text=f"{num} пара ({time})", callback_data=f"setnum_{num}")])
+    buttons = [[InlineKeyboardButton(text=f"{num} пара ({time})", callback_data=f"setnum_{num}")] for num, time in TIME_SLOTS.items()]
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
     await callback.message.edit_text(f"Дата: {date_str}\nВыбери номер следующей пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(AddSchedule.num)
@@ -502,10 +574,7 @@ async def admin_del_schedule(callback: types.CallbackQuery):
         items = result.scalars().all()
     if not items:
         await callback.message.edit_text("Расписание пусто.", reply_markup=get_admin_keyboard()); return
-    buttons = []
-    for i in items:
-        text = f"{i.date_str} | {i.lesson_num}. {i.subject}"
-        buttons.append([InlineKeyboardButton(text=f"🗑 {text}", callback_data=f"del_sched_{i.id}")])
+    buttons = [[InlineKeyboardButton(text=f"🗑 {i.date_str} | {i.lesson_num}. {i.subject}", callback_data=f"del_sched_{i.id}")] for i in items]
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     await callback.message.edit_text("Нажми на пару, чтобы удалить её:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
@@ -550,8 +619,7 @@ async def process_view_date(callback: types.CallbackQuery):
         emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
         text += f"{item.lesson_num}. {item.time_start}-{item.time_end} {emoji} **{item.subject}** ({item.lesson_type})\n"
         btn_text = f"{emoji} {item.subject}"
-        if len(btn_text) > 30:
-            btn_text = btn_text[:27] + "..."
+        if len(btn_text) > 30: btn_text = btn_text[:27] + "..."
         buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"viewsub_{item.id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="viewnav_back")])
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -565,19 +633,6 @@ async def back_to_calendar(callback: types.CallbackQuery):
     await callback.answer()
 
 # --- СПИСОК ГРУППЫ И РЕГИСТРАЦИЯ ---
-@dp.message(F.text == '👥 Список группы')
-async def show_group(message: types.Message):
-    async with async_session() as session:
-        result = await session.execute(select(Student).order_by(Student.name))
-        students = result.scalars().all()
-    if not students:
-        await message.answer("Список пуст."); return
-    text = "👥 **Список группы:**\n\n"
-    for s in students:
-        status = "✅" if s.telegram_id else "❌"
-        text += f"• {s.name} — 🎂 {s.birthday} (в боте: {status})\n"
-    await message.answer(text, parse_mode="Markdown", reply_markup=get_group_keyboard())
-
 @dp.callback_query(F.data == 'reg_student')
 async def register_student(callback: types.CallbackQuery):
     try:
@@ -652,7 +707,7 @@ async def web_server():
 async def main():
     await init_db()
     asyncio.create_task(web_server())
-    print('Бот запущен с удалением ДЗ!')
+    print('Бот запущен с ДЗ и галочками выполнения!')
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
