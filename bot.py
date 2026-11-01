@@ -115,44 +115,38 @@ def get_admin_keyboard():
 
 def get_group_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='📝 Зарегистрироваться в группе', callback_data='reg_student')]
+        [InlineKeyboardButton(text='📝 Зарегистрироваться в группе', callback_data='reg_student')],
+        [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
     ])
 
 def get_notify_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='🔔 Получать ВСЕ ДР', callback_data='notify_all_on')],
-        [InlineKeyboardButton(text='🔕 Не получать ДР', callback_data='notify_all_off')]
+        [InlineKeyboardButton(text='🔕 Не получать ДР', callback_data='notify_all_off')],
+        [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
     ])
 
-# --- ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ КАЛЕНДАРЯ ---
-# action - это префикс, который будет в callback_data (add или view)
+# --- КАЛЕНДАРЬ ---
 def get_calendar_keyboard(year: int, month: int, action: str = "cal"):
     kb = InlineKeyboardMarkup(inline_keyboard=[])
-    
     month_names = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", 
                    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
     
     kb.inline_keyboard.append([InlineKeyboardButton(text=f"{month_names[month-1]} {year}", callback_data="ignore")])
-    
     kb.inline_keyboard.append([
-        InlineKeyboardButton(text="Пн", callback_data="ignore"),
-        InlineKeyboardButton(text="Вт", callback_data="ignore"),
-        InlineKeyboardButton(text="Ср", callback_data="ignore"),
-        InlineKeyboardButton(text="Чт", callback_data="ignore"),
-        InlineKeyboardButton(text="Пт", callback_data="ignore"),
-        InlineKeyboardButton(text="Сб", callback_data="ignore"),
+        InlineKeyboardButton(text="Пн", callback_data="ignore"), InlineKeyboardButton(text="Вт", callback_data="ignore"),
+        InlineKeyboardButton(text="Ср", callback_data="ignore"), InlineKeyboardButton(text="Чт", callback_data="ignore"),
+        InlineKeyboardButton(text="Пт", callback_data="ignore"), InlineKeyboardButton(text="Сб", callback_data="ignore"),
         InlineKeyboardButton(text="Вс", callback_data="ignore"),
     ])
     
     month_days = calendar.monthcalendar(year, month)
-    
     for week in month_days:
         row = []
         for day in week:
             if day == 0:
                 row.append(InlineKeyboardButton(text=" ", callback_data="ignore"))
             else:
-                # Здесь мы добавляем action (add или view) в данные кнопки
                 row.append(InlineKeyboardButton(text=str(day), callback_data=f"{action}_{year}_{month}_{day}"))
         kb.inline_keyboard.append(row)
         
@@ -163,6 +157,7 @@ def get_calendar_keyboard(year: int, month: int, action: str = "cal"):
     
     kb.inline_keyboard.append([
         InlineKeyboardButton(text="◀️", callback_data=f"{action}nav_{prev_year}_{prev_month}"),
+        InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back"),
         InlineKeyboardButton(text="▶️", callback_data=f"{action}nav_{next_year}_{next_month}")
     ])
     
@@ -183,14 +178,14 @@ async def admin_panel(message: types.Message):
 @dp.callback_query(F.data == 'admin_back')
 async def admin_back(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.delete()
-    await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard(is_admin=True))
+    # Вместо удаления сообщения, редактируем его обратно в главное меню
+    await callback.message.edit_text("Главное меню:", reply_markup=get_admin_keyboard())
     await callback.answer()
 
 # --- СТУДЕНТЫ ---
 @dp.callback_query(F.data == 'admin_add_student')
 async def admin_add_student(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("Введи имя и фамилию студента:")
+    await callback.message.edit_text("Введи имя и фамилию студента:\n(Для отмены нажми /start)")
     await state.set_state(AddStudent.name)
     await callback.answer()
 
@@ -215,7 +210,7 @@ async def admin_del_student(callback: types.CallbackQuery):
         result = await session.execute(select(Student).order_by(Student.name))
         students = result.scalars().all()
     if not students:
-        await callback.message.answer("Список студентов пуст."); return
+        await callback.message.edit_text("Список студентов пуст.", reply_markup=get_admin_keyboard()); return
     buttons = [[InlineKeyboardButton(text=f"❌ {s.name}", callback_data=f"del_stud_{s.id}")] for s in students]
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     await callback.message.edit_text("Нажми на студента, чтобы удалить его:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -227,14 +222,12 @@ async def process_del_student(callback: types.CallbackQuery):
     async with async_session() as session:
         await session.execute(delete(Student).where(Student.id == student_id))
         await session.commit()
-    await callback.message.answer("Студент удален.")
     await admin_del_student(callback)
 
 # --- ДОБАВЛЕНИЕ ПАРЫ (ЧЕРЕЗ КАЛЕНДАРЬ) ---
 @dp.callback_query(F.data == 'admin_add_schedule')
 async def admin_add_schedule(callback: types.CallbackQuery, state: FSMContext):
     now = datetime.now()
-    # Передаем action="add", чтобы кнопки вели на добавление
     kb = get_calendar_keyboard(now.year, now.month, action="add")
     await callback.message.edit_text("Выбери дату для новой пары:", reply_markup=kb)
     await callback.answer()
@@ -251,7 +244,6 @@ async def calendar_navigate_add(callback: types.CallbackQuery):
 async def process_sched_date(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split('_')
     year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
-    
     date_str = f"{day:02d}.{month:02d}.{year}"
     await state.update_data(date=date_str)
     
@@ -285,6 +277,7 @@ async def process_sched_subject(callback: types.CallbackQuery, state: FSMContext
     await state.update_data(subject=subject)
     
     buttons = [[InlineKeyboardButton(text=l_type, callback_data=f"type_{l_type}")] for l_type in LESSON_TYPES]
+    buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
     await callback.message.edit_text(f"Предмет: {subject}\nВыбери тип пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
@@ -303,8 +296,10 @@ async def process_sched_type(callback: types.CallbackQuery, state: FSMContext):
         session.add(new_item)
         await session.commit()
     
-    buttons = [[InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="add_more_sched")],
-               [InlineKeyboardButton(text="✅ Закончить", callback_data="admin_back")]]
+    buttons = [
+        [InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="add_more_sched")],
+        [InlineKeyboardButton(text="✅ В админ-панель", callback_data="admin_back")]
+    ]
     
     await callback.message.edit_text(
         f"✅ Пара добавлена:\n{data['date']}, {data['num']} пара\n{data['subject']} ({lesson_type})", 
@@ -335,7 +330,7 @@ async def admin_del_schedule(callback: types.CallbackQuery):
         items = result.scalars().all()
     
     if not items:
-        await callback.message.answer("Расписание пусто."); return
+        await callback.message.edit_text("Расписание пусто.", reply_markup=get_admin_keyboard()); return
     
     buttons = []
     for i in items:
@@ -352,14 +347,12 @@ async def process_del_schedule(callback: types.CallbackQuery):
     async with async_session() as session:
         await session.execute(delete(ScheduleItem).where(ScheduleItem.id == item_id))
         await session.commit()
-    await callback.message.answer("Пара удалена.")
     await admin_del_schedule(callback)
 
-# --- ПРОСМОТР РАСПИСАНИЯ (КАЛЕНДАРЬ ДЛЯ ВСЕХ) ---
+# --- ПРОСМОТР РАСПИСАНИЯ ---
 @dp.message(F.text == '📅 Расписание')
 async def schedule_menu(message: types.Message):
     now = datetime.now()
-    # Передаем action="view", чтобы кнопки вели на просмотр
     kb = get_calendar_keyboard(now.year, now.month, action="view")
     await message.answer("Выбери дату, чтобы посмотреть расписание:", reply_markup=kb)
 
@@ -375,14 +368,15 @@ async def calendar_navigate_view(callback: types.CallbackQuery):
 async def process_view_date(callback: types.CallbackQuery):
     parts = callback.data.split('_')
     year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
-    
     date_str = f"{day:02d}.{month:02d}.{year}"
+    
     async with async_session() as session:
         result = await session.execute(select(ScheduleItem).where(ScheduleItem.date_str == date_str).order_by(ScheduleItem.lesson_num))
         items = result.scalars().all()
         
     if not items:
-        await callback.message.answer(f"📅 На {date_str} пар нет.")
+        # Возвращаемся в календарь, а не спамим
+        await callback.answer(f"На {date_str} пар нет.", show_alert=True)
         return
         
     text = f"📅 **Расписание на {date_str}**\n\n"
@@ -395,8 +389,17 @@ async def process_view_date(callback: types.CallbackQuery):
     
     for item in unique_items:
         buttons.append([InlineKeyboardButton(text=item.subject, callback_data=f"viewsub_{item.id}")])
-        
-    await callback.message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="viewnav_back")])
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data == 'viewnav_back')
+async def back_to_calendar(callback: types.CallbackQuery):
+    now = datetime.now()
+    kb = get_calendar_keyboard(now.year, now.month, action="view")
+    await callback.message.edit_text("Выбери дату, чтобы посмотреть расписание:", reply_markup=kb)
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith('viewsub_'))
 async def show_subject_details(callback: types.CallbackQuery):
@@ -404,7 +407,9 @@ async def show_subject_details(callback: types.CallbackQuery):
     async with async_session() as session:
         result = await session.execute(select(ScheduleItem).where(ScheduleItem.id == item_id))
         item = result.scalars().first()
-    await callback.message.answer(f"📚 Материалы по предмету **{item.subject}** ({item.lesson_type}) скоро появятся тут!", parse_mode="Markdown")
+    
+    buttons = [[InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_{item.date_str[6:]}_{item.date_str[3:5]}_{item.date_str[:2]}")]]
+    await callback.message.edit_text(f"📚 Материалы по предмету **{item.subject}** ({item.lesson_type}) скоро появятся тут!", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 # --- СПИСОК ГРУППЫ ---
@@ -430,18 +435,19 @@ async def register_student(callback: types.CallbackQuery):
             existing_student = result.scalars().first()
             
             if existing_student:
-                await callback.message.answer(f"Ты уже зарегистрирован(а) как {existing_student.name}!")
+                await callback.message.edit_text(f"Ты уже зарегистрирован(а) как {existing_student.name}!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]]))
             else:
                 result = await session.execute(select(Student).where(Student.telegram_id.is_(None)))
                 unlinked = result.scalars().all()
                 if not unlinked:
-                    await callback.message.answer("Нет свободных студентов в списке. Обратись к старосте!")
+                    await callback.message.edit_text("Нет свободных студентов в списке. Обратись к старосте!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]]))
                 else:
                     text = "Нажми на свое имя в списке, чтобы привязать аккаунт:\n\n"
                     buttons = []
                     for st in unlinked:
                         buttons.append([InlineKeyboardButton(text=st.name, callback_data=f"link_{st.id}")])
-                    await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+                    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
         await callback.message.answer(f"Произошла ошибка: {e}")
@@ -473,7 +479,7 @@ async def set_notification(callback: types.CallbackQuery):
             await session.execute(update(Student).where(Student.telegram_id == user_id).values(notify_all=notify_value))
             await session.commit()
         status = "включены" if notify_value else "выключены"
-        await callback.message.edit_text(f"Уведомления о ДР {status}!")
+        await callback.message.edit_text(f"Уведомления о ДР {status}!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]]))
         await callback.answer()
     except Exception as e:
         await callback.message.answer(f"Ошибка с уведомлениями: {e}")
@@ -495,7 +501,7 @@ async def web_server():
 async def main():
     await init_db()
     asyncio.create_task(web_server())
-    print('Бот запущен с календарем!')
+    print('Бот запущен (с кнопками Назад и без спама)!')
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
