@@ -101,21 +101,23 @@ async def init_db():
         await conn.execute(text("CREATE TABLE IF NOT EXISTS schedule_dates (id SERIAL PRIMARY KEY, date_str VARCHAR, lesson_num INTEGER, subject VARCHAR, lesson_type VARCHAR, time_start VARCHAR, time_end VARCHAR);"))
         await conn.execute(text("CREATE TABLE IF NOT EXISTS homeworks_v1 (id SERIAL PRIMARY KEY, schedule_id INTEGER, content VARCHAR, file_id VARCHAR);"))
         await conn.execute(text("CREATE TABLE IF NOT EXISTS completed_homeworks (id SERIAL PRIMARY KEY, student_id INTEGER, homework_id INTEGER);"))
+        
+        # Создаем/обновляем таблицу заметок
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS notes (
                 id SERIAL PRIMARY KEY, student_id INTEGER, subject VARCHAR, content VARCHAR
             );
         """))
         
-        # ⚠️ Обновляем старую таблицу (добавляем колонки, если их нет)
+        # Добавляем новые колонки (если их нет)
         try:
             await conn.execute(text("ALTER TABLE notes ADD COLUMN IF NOT EXISTS subject VARCHAR;"))
-            # ВОТ ЗДЕСЬ ДОБАВЛЯЕМ НОВУЮ СТРОКУ:
             await conn.execute(text("ALTER TABLE notes ADD COLUMN IF NOT EXISTS is_from_admin BOOLEAN DEFAULT FALSE;"))
         except Exception as e:
-            print(f"Колонки уже существуют или произошла ошибка: {e}")
-
-                await conn.execute(text("""
+            print(f"Ошибка при обновлении колонок: {e}")
+        
+        # Создаем таблицу посещаемости
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS attendance (
                 id SERIAL PRIMARY KEY, schedule_id INTEGER, student_id INTEGER
             );
