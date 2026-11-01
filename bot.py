@@ -99,6 +99,12 @@ async def init_db():
                 id SERIAL PRIMARY KEY, student_id INTEGER, subject VARCHAR, content VARCHAR
             );
         """))
+        # ⚠️ ДОБАВЛЯЕМ ЭТУ СТРОКУ, чтобы обновить старую таблицу
+        try:
+            await conn.execute(text("ALTER TABLE notes ADD COLUMN IF NOT EXISTS subject VARCHAR;"))
+        except Exception as e:
+            print(f"Колонка subject уже существует или произошла ошибка: {e}")
+            
         print("База данных готова!")
 
 # --- БОТ ---
