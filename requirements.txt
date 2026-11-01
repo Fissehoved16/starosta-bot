@@ -3,3 +3,4 @@ aiohttp
 asyncpg
 SQLAlchemy
 python-dotenv
+greenlet
