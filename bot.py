@@ -194,7 +194,7 @@ def get_calendar_keyboard(year: int, month: int, action: str = "cal"):
     
     kb.inline_keyboard.append([
         InlineKeyboardButton(text="◀️", callback_data=f"{action}nav_{prev_year}_{prev_month}"),
-        InlineKeyboardButton(text="🔙 Назад", callback_data=f"{action}_exit_calendar"),
+        InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu"),
         InlineKeyboardButton(text="▶️", callback_data=f"{action}nav_{next_year}_{next_month}")
     ])
     return kb
@@ -215,6 +215,13 @@ async def admin_panel(message: types.Message):
 async def admin_back(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("Главное меню:", reply_markup=get_admin_keyboard())
+    await callback.answer()
+
+@dp.callback_query(F.data == 'exit_to_menu')
+async def exit_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    is_admin = callback.from_user.id == ADMIN_ID
+    await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard(is_admin))
     await callback.answer()
     
 @dp.callback_query(F.data.endswith('_exit_calendar'))
