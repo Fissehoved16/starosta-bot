@@ -541,38 +541,43 @@ async def process_att_date(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith('att_lesson_'))
 async def mark_attendance(callback: types.CallbackQuery):
-    schedule_id = int(callback.data.split('_')[2])
-    
-    async with async_session() as session:
-        # Получаем информацию о паре
-        result = await session.execute(select(ScheduleItem).where(ScheduleItem.id == schedule_id))
-        item = result.scalars().first()
+    try:
+        schedule_id = int(callback.data.split('_')[2])
         
-        # Получаем всех студентов
-        result = await session.execute(select(Student).order_by(Student.name))
-        students = result.scalars().all()
+        async with async_session() as session:
+            # Получаем информацию о паре
+            result = await session.execute(select(ScheduleItem).where(ScheduleItem.id == schedule_id))
+            item = result.scalars().first()
+            
+            # Получаем всех студентов
+            result = await session.execute(select(Student).order_by(Student.name))
+            students = result.scalars().all()
+            
+            # Получаем текущие отметки
+            result = await session.execute(select(Attendance).where(Attendance.schedule_id == schedule_id))
+            att_records = result.scalars().all()
+            present_ids = [a.student_id for a in att_records]
+
+        if not item:
+            await callback.answer("Пара не найдена в базе. Попробуй удалить и добавить её заново.", show_alert=True)
+            return
+
+        text = f"📊 **Посещаемость:** {item.subject} ({item.date_str})\n\n"
+        buttons = []
+        for s in students:
+            if s.id in present_ids:
+                status = "✅"
+            else:
+                status = "❌"
+            buttons.append([InlineKeyboardButton(text=f"{status} {s.name}", callback_data=f"att_toggle_{schedule_id}_{s.id}")])
         
-        # Получаем текущие отметки
-        result = await session.execute(select(Attendance).where(Attendance.schedule_id == schedule_id))
-        att_records = result.scalars().all()
-        present_ids = [a.student_id for a in att_records]
-
-    if not item:
-        await callback.answer("Пара не найдена.", show_alert=True)
-        return
-
-    text = f"📊 **Посещаемость:** {item.subject} ({item.date_str})\n\n"
-    buttons = []
-    for s in students:
-        if s.id in present_ids:
-            status = "✅"
-        else:
-            status = "❌"
-        buttons.append([InlineKeyboardButton(text=f"{status} {s.name}", callback_data=f"att_toggle_{schedule_id}_{s.id}")])
-    
-    buttons.append([InlineKeyboardButton(text="🔙 Готово", callback_data="admin_attendance")])
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
+        buttons.append([InlineKeyboardButton(text="🔙 Готово", callback_data="admin_attendance")])
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+    except Exception as e:
+        # Если произошла ошибка, выводим её прямо в чат
+        await callback.message.answer(f"ОШИБКА ПОСЕЩАЕМОСТИ: {e}")
+        await callback.answer()
     
 @dp.callback_query(F.data.startswith('att_toggle_'))
 async def toggle_attendance(callback: types.CallbackQuery):
