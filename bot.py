@@ -452,29 +452,22 @@ async def send_hw_file(callback: types.CallbackQuery):
 @dp.callback_query(F.data == 'admin_attendance')
 async def admin_attendance_menu(callback: types.CallbackQuery):
     now = datetime.now()
-    kb = get_calendar_keyboard(now.year, now.month, action="att")
+    # Используем уникальный префикс "attcal"
+    kb = get_calendar_keyboard(now.year, now.month, action="attcal")
     await callback.message.edit_text("Выбери дату, чтобы отметить посещаемость:", reply_markup=kb)
     await callback.answer()
 
-@dp.callback_query(F.data.startswith('attnav_'))
+@dp.callback_query(F.data.startswith('attcalnav_'))
 async def att_calendar_navigate(callback: types.CallbackQuery):
     parts = callback.data.split('_')
     year, month = int(parts[1]), int(parts[2])
-    kb = get_calendar_keyboard(year, month, action="att")
+    kb = get_calendar_keyboard(year, month, action="attcal")
     await callback.message.edit_reply_markup(reply_markup=kb)
     await callback.answer()
 
-@dp.callback_query(F.data.startswith('att_'))
+@dp.callback_query(F.data.startswith('attcal_'))
 async def process_att_date(callback: types.CallbackQuery):
     parts = callback.data.split('_')
-    
-    # Если это сигнал переключения (toggle) или что-то другое, пропускаем
-    if parts[1] == 'toggle':
-        return
-        
-    if len(parts) != 4:
-        return
-        
     year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
     date_str = f"{day:02d}.{month:02d}.{year}"
     
@@ -489,57 +482,52 @@ async def process_att_date(callback: types.CallbackQuery):
     buttons = []
     for item in items:
         emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
-        buttons.append([InlineKeyboardButton(text=f"{item.lesson_num}. {emoji} {item.subject}", callback_data=f"mark_att_{item.id}")])
-    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+        # Уникальный префикс для выбора пары
+        buttons.append([InlineKeyboardButton(text=f"{item.lesson_num}. {emoji} {item.subject}", callback_data=f"attselect_{item.id}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu")])
     await callback.message.edit_text(f"Выбери пару на {date_str} для отметки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
-@dp.callback_query(F.data.startswith('mark_att_'))
+@dp.callback_query(F.data.startswith('attselect_'))
 async def mark_attendance(callback: types.CallbackQuery):
     try:
-        schedule_id = int(callback.data.split('_')[2])
+        schedule_id = int(callback.data.split('_')[1])
         
         async with async_session() as session:
-            # Получаем информацию о паре
             result = await session.execute(select(ScheduleItem).where(ScheduleItem.id == schedule_id))
             item = result.scalars().first()
             
-            # Получаем всех студентов
             result = await session.execute(select(Student).order_by(Student.name))
             students = result.scalars().all()
             
-            # Получаем текущие отметки
             result = await session.execute(select(Attendance).where(Attendance.schedule_id == schedule_id))
             att_records = result.scalars().all()
             present_ids = [a.student_id for a in att_records]
 
         if not item:
-            await callback.answer("Пара не найдена в базе. Попробуй удалить и добавить её заново.", show_alert=True)
+            await callback.answer("Пара не найдена в базе.", show_alert=True)
             return
 
         text = f"📊 **Посещаемость:** {item.subject} ({item.date_str})\n\n"
         buttons = []
         for s in students:
-            if s.id in present_ids:
-                status = "✅"
-            else:
-                status = "❌"
-            buttons.append([InlineKeyboardButton(text=f"{status} {s.name}", callback_data=f"att_toggle_{schedule_id}_{s.id}")])
+            status = "✅" if s.id in present_ids else "❌"
+            # Уникальный префикс для переключения статуса
+            buttons.append([InlineKeyboardButton(text=f"{status} {s.name}", callback_data=f"atttoggle_{schedule_id}_{s.id}")])
         
         buttons.append([InlineKeyboardButton(text="🔙 Готово", callback_data="exit_to_menu")])
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
-        # Если произошла ошибка, выводим её прямо в чат
         await callback.message.answer(f"ОШИБКА ПОСЕЩАЕМОСТИ: {e}")
         await callback.answer()
-    
-@dp.callback_query(F.data.startswith('att_toggle_'))
+
+@dp.callback_query(F.data.startswith('atttoggle_'))
 async def toggle_attendance(callback: types.CallbackQuery):
     try:
         parts = callback.data.split('_')
-        schedule_id = int(parts[2])
-        student_id = int(parts[3])
+        schedule_id = int(parts[1])
+        student_id = int(parts[2])
         
         async with async_session() as session:
             result = await session.execute(select(Attendance).where(Attendance.schedule_id == schedule_id, Attendance.student_id == student_id))
@@ -1078,8 +1066,8 @@ async def process_view_date(callback: types.CallbackQuery):
         if len(btn_text) > 30: btn_text = btn_text[:27] + "..."
         
         # Если это староста, добавляем кнопку посещаемости
-        if callback.from_user.id == ADMIN_ID:
-            buttons.append([InlineKeyboardButton(text=f"📊 {item.lesson_num}. {item.subject}", callback_data=f"mark_att_{item.id}")])
+         if callback.from_user.id == ADMIN_ID:
+            buttons.append([InlineKeyboardButton(text=f"📊 {item.lesson_num}. {item.subject}", callback_data=f"attselect_{item.id}")])
     
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_calendar_custom")])
     
