@@ -921,10 +921,12 @@ async def process_view_date(callback: types.CallbackQuery):
         btn_text = f"{emoji} {item.subject}"
         if len(btn_text) > 30: btn_text = btn_text[:27] + "..."
         buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"viewsub_{item.id}")])
-        buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_calendar_custom")])
+    
+    # Кнопка "Назад" добавляется ОДИН РАЗ после цикла
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_calendar_custom")])
+    
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
-
 @dp.callback_query(F.data == 'back_to_calendar_custom')
 async def back_to_calendar(callback: types.CallbackQuery):
     now = datetime.now()
