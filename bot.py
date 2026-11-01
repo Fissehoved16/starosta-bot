@@ -814,21 +814,40 @@ async def process_sched_type(callback: types.CallbackQuery, state: FSMContext):
     lesson_type = callback.data.split('_')[1]
     data = await state.get_data()
     time_slot = TIME_SLOTS[data['num']].split(' - ')
+    
     async with async_session() as session:
         new_item = ScheduleItem(date_str=data['date'], lesson_num=data['num'], subject=data['subject'], lesson_type=lesson_type, time_start=time_slot[0], time_end=time_slot[1])
         session.add(new_item)
         await session.commit()
-    buttons = [[InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="add_more_sched")], [InlineKeyboardButton(text="✅ В админ-панель", callback_data="admin_back")]]
-    await callback.message.edit_text(f"✅ Пара добавлена:\n{data['date']}, {data['num']} пара\n{data['subject']} ({lesson_type})", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    
+    # Очищаем состояние, чтобы кнопки работали корректно
+    await state.set_state(AddSchedule.date) # Сбрасываем на начальное состояние выбора
     await state.update_data(date=data['date']) 
+    
+    buttons = [
+        [InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="add_more_sched")], 
+        [InlineKeyboardButton(text="✅ В админ-панель", callback_data="admin_back")]
+    ]
+    
+    await callback.message.edit_text(
+        f"✅ Пара добавлена:\n{data['date']}, {data['num']} пара\n{data['subject']} ({lesson_type})", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
     await callback.answer()
 
 @dp.callback_query(F.data == 'add_more_sched')
 async def add_more_sched(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     date_str = data.get('date')
+    
+    if not date_str:
+        await callback.message.edit_text("Ошибка: дата потерялась. Вернись в админку.", reply_markup=get_admin_keyboard())
+        await callback.answer()
+        return
+
     buttons = [[InlineKeyboardButton(text=f"{num} пара ({time})", callback_data=f"setnum_{num}")] for num, time in TIME_SLOTS.items()]
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
+    
     await callback.message.edit_text(f"Дата: {date_str}\nВыбери номер следующей пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(AddSchedule.num)
     await callback.answer()
