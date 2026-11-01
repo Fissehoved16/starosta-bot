@@ -14,21 +14,34 @@ from sqlalchemy import Column, Integer, String, select, Boolean, update, text, d
 import calendar
 
 # --- НАСТРОЙКИ ---
-TOKEN = os.getenv("BOT_TOKEN", "ТВОЙ_ТОКЕН_ЗДЕСЬ")
+TOKEN = os.getenv("BOT_TOKEN", "9003221863:AAFxgNJNlwejxnkYVhnuYtsWREa3mNWEMnM")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = 8493824882 
 
-# --- ШАБЛОНЫ ---
+# --- ШАБЛОНЫ ВРЕМЕНИ ---
 TIME_SLOTS = {
-    1: "09:00 - 10:30", 2: "10:40 - 12:10", 3: "13:00 - 14:30",
-    4: "14:40 - 16:10", 5: "16:20 - 17:50", 6: "18:00 - 19:30",
+    1: "09:00 - 10:30",
+    2: "10:40 - 12:10",
+    3: "13:00 - 14:30",
+    4: "14:40 - 16:10",
+    5: "16:20 - 17:50",
+    6: "18:00 - 19:30",
 }
 
+# --- ШАБЛОНЫ ПРЕДМЕТОВ (ДОБАВЛЯЙ СЮДА СВОИ) ---
 SUBJECTS = [
-    "История России", "Информатика и программирование", "Основы Российской государственности",
-    "Математический анализ", "Дискретная математика", "Алгебра и теория чисел",
-    "Базовая физическая культура", "Архитектура вычислительных систем и компьютерных сетей",
-    "Иностранный язык", "Безопасность жизнедеятельности", "Психологический тренинг рулевого"
+    "История России",
+    "Информатика и программирование",
+    "Основы Российской государственности",
+    "Математический анализ",
+    "Дискретная математика",
+    "Алгебра и теория чисел",
+    "Базовая физическая культура",
+    "Архитектура вычислительных систем и компьютерных систем",
+    "Иностранный язык",
+    "Факультатив:система рельефно-точечного шрифта",
+    "Безопастность жизнедеятельности",
+    "Психологический тренинг рублево"
 ]
 
 LESSON_TYPES = ["Лекция", "Семинар", "Практика"]
@@ -63,9 +76,9 @@ class ScheduleItem(Base):
 class Homework(Base):
     __tablename__ = 'homeworks_v1'
     id = Column(Integer, primary_key=True)
-    schedule_id = Column(Integer) # Привязка к конкретной паре
-    content = Column(String) # Текст ДЗ
-    file_id = Column(String, nullable=True) # Файл (если есть)
+    schedule_id = Column(Integer)
+    content = Column(String)
+    file_id = Column(String, nullable=True)
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
@@ -123,6 +136,19 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
     ])
 
+def get_group_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='📝 Зарегистрироваться в группе', callback_data='reg_student')],
+        [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
+    ])
+
+def get_notify_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='🔔 Получать ВСЕ ДР', callback_data='notify_all_on')],
+        [InlineKeyboardButton(text='🔕 Не получать ДР', callback_data='notify_all_off')],
+        [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
+    ])
+
 # --- КАЛЕНДАРЬ ---
 def get_calendar_keyboard(year: int, month: int, action: str = "cal"):
     kb = InlineKeyboardMarkup(inline_keyboard=[])
@@ -177,15 +203,13 @@ async def admin_back(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Главное меню:", reply_markup=get_admin_keyboard())
     await callback.answer()
 
-# --- ТЕКСТОВЫЙ ВВОД ДЛЯ ДЗ (БЫСТРЫЙ СТАРТ) ---
+# --- БЫСТРЫЙ ВВОД ДЗ ---
 @dp.message(F.text.regexp(r'(?i)^\d{1,2}\s+[а-яА-Я]+\s+дз$'))
 async def quick_homework_start(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     
     date_text = message.text.lower().replace("дз", "").strip()
-    
-    # Пытаемся понять дату (например, "3 ноября" или "3 ноября 2026")
     now = datetime.now()
     year = now.year
     
@@ -209,7 +233,6 @@ async def quick_homework_start(message: types.Message, state: FSMContext):
     month = months[month_name]
     date_str = f"{day:02d}.{month:02d}.{year}"
     
-    # Ищем пары на эту дату
     async with async_session() as session:
         result = await session.execute(select(ScheduleItem).where(ScheduleItem.date_str == date_str).order_by(ScheduleItem.lesson_num))
         items = result.scalars().all()
@@ -283,7 +306,6 @@ async def show_subject_details(callback: types.CallbackQuery):
             if hw.file_id:
                 buttons.append([InlineKeyboardButton(text="📎 Прикрепленный файл", callback_data=f"sendfile_{hw.id}")])
                 
-    # Кнопка для старосты, чтобы добавить/изменить ДЗ
     if callback.from_user.id == ADMIN_ID:
         buttons.append([InlineKeyboardButton(text="📝 Добавить/Изменить ДЗ", callback_data=f"addhw_{item.id}")])
         
@@ -306,24 +328,7 @@ async def send_hw_file(callback: types.CallbackQuery):
             await callback.message.answer_photo(photo=hw.file_id)
     await callback.answer()
 
-# --- (ЗДЕСЬ ОСТАЛЬНОЙ КОД: СТУДЕНТЫ, КАЛЕНДАРЬ, АДМИНКА, РАСПИСАНИЕ) ---
-# Чтобы не дублировать 400 строк, я оставил функции календаря и расписания 
-# без изменений. Они точно такие же, как в прошлом коде.
-# ВАЖНО: Функции ниже нужны для работы бота.
-
-def get_group_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='📝 Зарегистрироваться в группе', callback_data='reg_student')],
-        [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
-    ])
-
-def get_notify_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🔔 Получать ВСЕ ДР', callback_data='notify_all_on')],
-        [InlineKeyboardButton(text='🔕 Не получать ДР', callback_data='notify_all_off')],
-        [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
-    ])
-
+# --- СТУДЕНТЫ ---
 @dp.callback_query(F.data == 'admin_add_student')
 async def admin_add_student(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Введи имя и фамилию студента:\n(Для отмены нажми /start)")
@@ -365,6 +370,7 @@ async def process_del_student(callback: types.CallbackQuery):
         await session.commit()
     await admin_del_student(callback)
 
+# --- ДОБАВЛЕНИЕ ПАРЫ ---
 @dp.callback_query(F.data == 'admin_add_schedule')
 async def admin_add_schedule(callback: types.CallbackQuery, state: FSMContext):
     now = datetime.now()
@@ -452,6 +458,7 @@ async def add_more_sched(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(AddSchedule.num)
     await callback.answer()
 
+# --- УДАЛЕНИЕ ПАРЫ ---
 @dp.callback_query(F.data == 'admin_del_schedule')
 async def admin_del_schedule(callback: types.CallbackQuery):
     async with async_session() as session:
@@ -475,6 +482,7 @@ async def process_del_schedule(callback: types.CallbackQuery):
         await session.commit()
     await admin_del_schedule(callback)
 
+# --- ПРОСМОТР РАСПИСАНИЯ ---
 @dp.message(F.text == '📅 Расписание')
 async def schedule_menu(message: types.Message):
     now = datetime.now()
@@ -520,6 +528,7 @@ async def back_to_calendar(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери дату, чтобы посмотреть расписание:", reply_markup=kb)
     await callback.answer()
 
+# --- СПИСОК ГРУППЫ И РЕГИСТРАЦИЯ ---
 @dp.message(F.text == '👥 Список группы')
 async def show_group(message: types.Message):
     async with async_session() as session:
@@ -591,6 +600,7 @@ async def set_notification(callback: types.CallbackQuery):
         await callback.message.answer(f"Ошибка с уведомлениями: {e}")
         await callback.answer()
 
+# --- ВЕБ-СЕРВЕР ---
 async def handle(request):
     return web.Response(text="Bot is running!")
 
