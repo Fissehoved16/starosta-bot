@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -8,13 +9,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy import Column, Integer, String, select
+from sqlalchemy import Column, Integer, String, select, Boolean, update, text
 
 # --- НАСТРОЙКИ ---
-TOKEN = os.getenv("BOT_TOKEN", "9003221863:AAFxgNJNlwejxnkYVhnuYtsWREa3mNWEMnM") # Замени на свой токен, если не добавил в Environment
+TOKEN = os.getenv("BOT_TOKEN", "9003221863:AAFxgNJNlwejxnkYVhnuYtsWREa3mNWEMnM")
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-# ID старосты (тебя) - только ты можешь управлять ботом
 ADMIN_ID = 8493824882 
 
 # --- БАЗА ДАННЫХ ---
@@ -25,8 +24,9 @@ class Student(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String)
     birthday = Column(String)
+    telegram_id = Column(Integer, nullable=True) # Телеграм ID студента
+    notify_all = Column(Boolean, default=False) # Хочет ли получать все ДР
 
-# Исправляем ссылку для SQLAlchemy (asyncpg)
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 
@@ -36,12 +36,18 @@ async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Автоматически добавляем новые столбцы, если их нет (для старых версий базы)
+        try:
+            await conn.execute(text("ALTER TABLE students ADD COLUMN telegram_id INTEGER"))
+            await conn.execute(text("ALTER TABLE students ADD COLUMN notify_all BOOLEAN DEFAULT FALSE"))
+        except:
+            pass
 
 # --- БОТ ---
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Машина состояний (для диалогов)
+# Машина состояний
 class AddStudent(StatesGroup):
     name = State()
     birthday = State()
@@ -62,6 +68,17 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text='🔙 Назад', callback_data='admin_back')]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_group_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='📝 Зарегистрироваться в группе', callback_data='reg_student')]
+    ])
+
+def get_notify_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='🔔 Получать ВСЕ ДР', callback_data='notify_all_on')],
+        [InlineKeyboardButton(text='🔕 Не получать ДР', callback_data='notify_all_off')]
+    ])
 
 # --- ХЭНДЛЕРЫ ---
 @dp.message(Command('start'))
@@ -87,7 +104,7 @@ async def admin_back(callback: types.CallbackQuery):
     await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard(is_admin=True))
     await callback.answer()
 
-# --- ДОБАВЛЕНИЕ СТУДЕНТА ---
+# --- ДОБАВЛЕНИЕ СТУДЕНТА (АДМИН) ---
 @dp.callback_query(F.data == 'admin_add_student')
 async def admin_add_student(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("Введи имя и фамилию студента:")
@@ -106,7 +123,6 @@ async def process_birthday(message: types.Message, state: FSMContext):
     name = data['name']
     birthday = message.text
     
-    # Сохраняем в базу
     async with async_session() as session:
         new_student = Student(name=name, birthday=birthday)
         session.add(new_student)
@@ -116,7 +132,7 @@ async def process_birthday(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("Вернулись в меню:", reply_markup=get_main_keyboard(is_admin=True))
 
-# --- СПИСОК ГРУППЫ ---
+# --- СПИСОК ГРУППЫ И РЕГИСТРАЦИЯ ---
 @dp.message(F.text == '👥 Список группы')
 async def show_group(message: types.Message):
     async with async_session() as session:
@@ -129,9 +145,71 @@ async def show_group(message: types.Message):
         
     text = "👥 **Список группы:**\n\n"
     for student in students:
-        text += f"• {student.name} — 🎂 {student.birthday}\n"
+        status = "✅" if student.telegram_id else "❌"
+        text += f"• {student.name} — 🎂 {student.birthday} (в боте: {status})\n"
     
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_group_keyboard())
+
+# --- РЕГИСТРАЦИЯ СТУДЕНТА ---
+@dp.callback_query(F.data == 'reg_student')
+async def register_student(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    user_name = callback.from_user.first_name
+    
+    async with async_session() as session:
+        # Ищем, есть ли уже такой студент в базе по ID (чтобы не дублировать)
+        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+        existing_student = result.scalars().first()
+        
+        if existing_student:
+            await callback.message.answer(f"Ты уже зарегистрирован(а) как {existing_student.name}!")
+        else:
+            # Находим всех студентов без привязки к ТГ
+            result = await session.execute(select(Student).where(Student.telegram_id.is_(None)))
+            unlinked = result.scalars().all()
+            
+            if not unlinked:
+                await callback.message.answer("Нет свободных студентов в списке. Обратись к старосте!")
+            else:
+                # Просим старосту или студента выбрать себя (упрощенно: ищем по имени)
+                text = "Нажми на свое имя в списке, чтобы привязать аккаунт:\n\n"
+                buttons = []
+                for st in unlinked:
+                    buttons.append([InlineKeyboardButton(text=st.name, callback_data=f"link_{st.id}")])
+                await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('link_'))
+async def link_account(callback: types.CallbackQuery):
+    student_id = int(callback.data.split('_')[1])
+    user_id = callback.from_user.id
+    
+    async with async_session() as session:
+        await session.execute(update(Student).where(Student.id == student_id).values(telegram_id=user_id))
+        await session.commit()
+        
+        # Получаем имя
+        result = await session.execute(select(Student).where(Student.id == student_id))
+        student = result.scalars().first()
+        
+    await callback.message.edit_text(f"Отлично! Теперь ты в системе как {student.name}.\nНастроим уведомления?", 
+                                     reply_markup=get_notify_keyboard())
+    await callback.answer()
+
+# --- НАСТРОЙКИ УВЕДОМЛЕНИЙ ---
+@dp.callback_query(F.data.startswith('notify_all_'))
+async def set_notification(callback: types.CallbackQuery):
+    action = callback.data.split('_')[2]
+    user_id = callback.from_user.id
+    notify_value = True if action == 'on' else False
+    
+    async with async_session() as session:
+        await session.execute(update(Student).where(Student.telegram_id == user_id).values(notify_all=notify_value))
+        await session.commit()
+        
+    status = "включены" if notify_value else "выключены"
+    await callback.message.edit_text(f"Уведомления о ДР {status}!")
+    await callback.answer()
 
 # --- ЗАГЛУШКИ ---
 @dp.message(F.text == '📅 Расписание')
@@ -155,10 +233,43 @@ async def web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
+# --- ФОНОВАЯ ЗАДАЧА ДЛЯ ДР ---
+async def birthday_checker():
+    while True:
+        now = datetime.now()
+        # Проверяем в 9:00 утра
+        if now.hour == 9 and now.minute == 0:
+            today = now.strftime("%d.%m")
+            async with async_session() as session:
+                # Ищем студентов, у кого сегодня ДР
+                result = await session.execute(select(Student).where(Student.birthday.like(f"{today}%")))
+                bday_people = result.scalars().all()
+                
+                if bday_people:
+                    text = "🎉 **Сегодня день рождения у:**\n\n"
+                    for p in bday_people:
+                        text += f"• {p.name} 🎂\n"
+                    
+                    # Отправляем админу
+                    await bot.send_message(ADMIN_ID, text, parse_mode="Markdown")
+                    
+                    # Отправляем тем, кто подписался на ВСЕ ДР
+                    result = await session.execute(select(Student).where(Student.notify_all == True))
+                    subscribers = result.scalars().all()
+                    for sub in subscribers:
+                        if sub.telegram_id and sub.telegram_id != ADMIN_ID:
+                            try:
+                                await bot.send_message(sub.telegram_id, text, parse_mode="Markdown")
+                            except:
+                                pass
+            await asyncio.sleep(60) # Ждем минуту, чтобы не спамить
+        await asyncio.sleep(30) # Проверяем каждые 30 секунд
+
 async def main():
-    await init_db() # Создаем таблицы при запуске
+    await init_db()
     asyncio.create_task(web_server())
-    print('Бот запущен в облаке с базой данных!')
+    asyncio.create_task(birthday_checker()) # Запускаем проверку ДР в фоне
+    print('Бот запущен в облаке с базой данных и уведомлениями!')
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
