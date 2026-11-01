@@ -78,8 +78,9 @@ class CompletedHomework(Base):
 class Note(Base):
     __tablename__ = 'notes'
     id = Column(Integer, primary_key=True)
-    student_id = Column(Integer) # Кому принадлежит заметка
-    content = Column(String) # Текст заметки
+    student_id = Column(Integer)
+    subject = Column(String, nullable=True) # Если пусто, значит заметка личная
+    content = Column(String)
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
@@ -93,7 +94,11 @@ async def init_db():
         await conn.execute(text("CREATE TABLE IF NOT EXISTS schedule_dates (id SERIAL PRIMARY KEY, date_str VARCHAR, lesson_num INTEGER, subject VARCHAR, lesson_type VARCHAR, time_start VARCHAR, time_end VARCHAR);"))
         await conn.execute(text("CREATE TABLE IF NOT EXISTS homeworks_v1 (id SERIAL PRIMARY KEY, schedule_id INTEGER, content VARCHAR, file_id VARCHAR);"))
         await conn.execute(text("CREATE TABLE IF NOT EXISTS completed_homeworks (id SERIAL PRIMARY KEY, student_id INTEGER, homework_id INTEGER);"))
-        await conn.execute(text("CREATE TABLE IF NOT EXISTS notes (id SERIAL PRIMARY KEY, student_id INTEGER, content VARCHAR);"))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS notes (
+                id SERIAL PRIMARY KEY, student_id INTEGER, subject VARCHAR, content VARCHAR
+            );
+        """))
         print("База данных готова!")
 
 # --- БОТ ---
@@ -508,62 +513,108 @@ async def show_group(message: types.Message):
     await message.answer(text, parse_mode="Markdown", reply_markup=get_group_keyboard())
 
 # --- ЗАМЕТКИ ---
-@dp.message(F.text == '📝 Заметки')
+@dp.message(F.text.in_(['📝 Заметки', '📝 Заметки']))
 async def notes_menu(message: types.Message):
-    user_id = str(message.from_user.id)
+    buttons = [
+        [InlineKeyboardButton(text="👤 Личные заметки", callback_data="notes_personal")],
+        [InlineKeyboardButton(text="📚 Заметки по предметам", callback_data="notes_subjects")]
+    ]
+    await message.answer("Выбери тип заметок:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data == 'notes_personal')
+async def show_personal_notes(callback: types.CallbackQuery):
+    user_id = str(callback.from_user.id)
     async with async_session() as session:
         result = await session.execute(select(Student).where(Student.telegram_id == user_id))
         student = result.scalars().first()
         
     if not student:
-        await message.answer("Ты не зарегистрирован в боте. Нажми 'Список группы' и зарегистрируйся.")
+        await callback.answer("Сначала зарегистрируйся!", show_alert=True)
         return
 
     async with async_session() as session:
-        result = await session.execute(select(Note).where(Note.student_id == student.id))
+        result = await session.execute(select(Note).where(Note.student_id == student.id, Note.subject.is_(None)))
         notes = result.scalars().all()
         
-    text = "📝 **Твои заметки:**\n\n"
+    text = "👤 **Твои личные заметки:**\n\n"
     buttons = []
     if not notes:
-        text += "У тебя пока нет заметок."
+        text += "У тебя пока нет личных заметок."
     else:
         for note in notes:
             text += f"• {note.content}\n"
             buttons.append([InlineKeyboardButton(text=f"❌ Удалить: {note.content[:15]}...", callback_data=f"del_note_{note.id}")])
             
-    buttons.append([InlineKeyboardButton(text="➕ Добавить заметку", callback_data="add_note")])
-    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-@dp.callback_query(F.data == 'add_note')
-async def add_note_start(callback: types.CallbackQuery, state: FSMContext):
-    buttons = [[InlineKeyboardButton(text="🔙 Отмена", callback_data="notes_cancel")]]
-    await callback.message.edit_text("Напиши текст заметки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await state.set_state(AddNote.waiting_for_content)
+    buttons.append([InlineKeyboardButton(text="➕ Добавить личную заметку", callback_data="add_personal_note")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="notes_back")])
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
-@dp.message(AddNote.waiting_for_content)
-async def save_note(message: types.Message, state: FSMContext):
-    user_id = str(message.from_user.id)
-    content = message.text
+@dp.callback_query(F.data == 'notes_subjects')
+async def show_subject_notes(callback: types.CallbackQuery):
+    buttons = []
+    for idx, subj in enumerate(SUBJECTS):
+        btn_text = subj if len(subj) < 25 else subj[:22] + "..."
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"viewnotes_{idx}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="notes_back")])
+    await callback.message.edit_text("Выбери предмет:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('viewnotes_'))
+async def show_notes_for_subject(callback: types.CallbackQuery):
+    idx = int(callback.data.split('_')[1])
+    subject = SUBJECTS[idx]
+    user_id = str(callback.from_user.id)
     
     async with async_session() as session:
         result = await session.execute(select(Student).where(Student.telegram_id == user_id))
         student = result.scalars().first()
-        
-        if student:
-            session.add(Note(student_id=student.id, content=content))
-            await session.commit()
+        if not student:
+            await callback.answer("Сначала зарегистрируйся!", show_alert=True)
+            return
             
-    await message.answer("✅ Заметка добавлена!")
-    await state.clear()
-    await notes_menu(message) # Возвращаемся к заметкам
+        result = await session.execute(select(Note).where(Note.student_id == student.id, Note.subject == subject))
+        notes = result.scalars().all()
 
-@dp.callback_query(F.data == 'notes_cancel')
-async def notes_cancel(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.delete()
-    await callback.message.answer("Действие отменено.")
+    text = f"📚 **Заметки по предмету: {subject}**\n\n"
+    buttons = []
+    if not notes:
+        text += "Заметок пока нет."
+    else:
+        for note in notes:
+            text += f"• {note.content}\n"
+            buttons.append([InlineKeyboardButton(text=f"❌ Удалить: {note.content[:15]}...", callback_data=f"del_note_{note.id}")])
+            
+    buttons.append([InlineKeyboardButton(text="➕ Добавить заметку", callback_data=f"add_subj_note_{idx}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="notes_subjects")])
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data == 'notes_back')
+async def notes_back(callback: types.CallbackQuery):
+    buttons = [
+        [InlineKeyboardButton(text="👤 Личные заметки", callback_data="notes_personal")],
+        [InlineKeyboardButton(text="📚 Заметки по предметам", callback_data="notes_subjects")]
+    ]
+    await callback.message.edit_text("Выбери тип заметок:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data == 'add_personal_note')
+async def add_personal_note_start(callback: types.CallbackQuery, state: FSMContext):
+    buttons = [[InlineKeyboardButton(text="🔙 Отмена", callback_data="notes_back")]]
+    await callback.message.edit_text("Напиши текст личной заметки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await state.update_data(note_subject=None)
+    await state.set_state(AddNote.waiting_for_content)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('add_subj_note_'))
+async def add_subject_note_start(callback: types.CallbackQuery, state: FSMContext):
+    idx = int(callback.data.split('_')[3])
+    subject = SUBJECTS[idx]
+    buttons = [[InlineKeyboardButton(text="🔙 Отмена", callback_data=f"viewnotes_{idx}")]]
+    await callback.message.edit_text(f"Напиши заметку по предмету **{subject}**:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await state.update_data(note_subject=subject)
+    await state.set_state(AddNote.waiting_for_content)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith('del_note_'))
@@ -573,9 +624,38 @@ async def delete_note(callback: types.CallbackQuery):
         await session.execute(delete(Note).where(Note.id == note_id))
         await session.commit()
     await callback.message.answer("Заметка удалена.")
-    await callback.message.delete()
-    await notes_menu(callback.message)
     await callback.answer()
+    # Возвращаемся в меню заметок
+    buttons = [
+        [InlineKeyboardButton(text="👤 Личные заметки", callback_data="notes_personal")],
+        [InlineKeyboardButton(text="📚 Заметки по предметам", callback_data="notes_subjects")]
+    ]
+    await callback.message.edit_text("Выбери тип заметок:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.message(AddNote.waiting_for_content)
+async def save_note(message: types.Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    content = message.text
+    data = await state.get_data()
+    subject = data.get('note_subject')
+    
+    async with async_session() as session:
+        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+        student = result.scalars().first()
+        
+        if student:
+            session.add(Note(student_id=student.id, subject=subject, content=content))
+            await session.commit()
+            
+    await message.answer("✅ Заметка добавлена!")
+    await state.clear()
+    
+    if subject:
+        idx = SUBJECTS.index(subject)
+        buttons = [[InlineKeyboardButton(text="🔙 Назад к предмету", callback_data=f"viewnotes_{idx}")]]
+        await message.answer("Готово!", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    else:
+        await notes_menu(message)
 
 # --- ДОБАВЛЕНИЕ ПАРЫ ---
 @dp.callback_query(F.data == 'admin_add_schedule')
