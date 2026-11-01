@@ -14,7 +14,7 @@ from sqlalchemy import Column, Integer, String, select, Boolean, update, text, d
 import calendar
 
 # --- НАСТРОЙКИ ---
-TOKEN = os.getenv("BOT_TOKEN", "9003221863:AAFxgNJNlwejxnkYVhnuYtsWREa3mNWEMnM")
+TOKEN = os.getenv("BOT_TOKEN", "9280509373:AAG1-6DJiYDwDJ8fOVsTsfxrrcDlpdCB2oY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = 8493824882 
 
