@@ -415,7 +415,6 @@ async def view_attendance_stats_msg(message: types.Message):
     user_id = str(message.from_user.id)
     
     async with async_session() as session:
-        # Проверяем, кто нажал кнопку (староста или студент)
         result = await session.execute(select(Student).where(Student.telegram_id == user_id))
         current_student = result.scalars().first()
         
@@ -424,8 +423,6 @@ async def view_attendance_stats_msg(message: types.Message):
             if not current_student:
                 await message.answer("Ты не зарегистрирован в боте. Нажми 'Список группы' и привяжи аккаунт.")
                 return
-                
-            # Показываем статистику только этого студента
             await show_student_stats_for_user(message, current_student)
             return
 
@@ -1274,10 +1271,9 @@ async def process_view_date(callback: types.CallbackQuery):
         btn_text = f"{emoji} {item.subject}"
         if len(btn_text) > 30: btn_text = btn_text[:27] + "..."
         
-                # Если это староста, добавляем кнопку посещаемости
+        # Если это староста, добавляем кнопку посещаемости
         if callback.from_user.id == ADMIN_ID:
             buttons.append([InlineKeyboardButton(text=f"📊 {item.lesson_num}. {item.subject}", callback_data=f"attselect_{item.id}")])
-    
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_calendar_custom")])
     
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
