@@ -34,12 +34,15 @@ engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
 async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 async def init_db():
+    # Полностью уничтожаем движок, чтобы сбросить кеш SQLAlchemy
+    await engine.dispose()
+    
     async with engine.begin() as conn:
-        # 1. Уничтожаем старую таблицу (вместе с неправильным типом данных)
+        # 1. Удаляем таблицу, чтобы избавиться от старого типа INTEGER
         await conn.execute(text("DROP TABLE IF EXISTS students;"))
         print("Старая таблица удалена.")
         
-        # 2. Создаем новую таблицу с правильными типами (BIGINT)
+        # 2. Создаем новую таблицу с явным указанием BIGINT
         await conn.execute(text("""
             CREATE TABLE students (
                 id SERIAL PRIMARY KEY,
