@@ -20,7 +20,7 @@ ADMIN_ID = 8493824882
 Base = declarative_base()
 
 class Student(Base):
-    __tablename__ = 'students'
+    __tablename__ = 'students_v2'
     id = Column(Integer, primary_key=True)
     name = Column(String)
     birthday = Column(String)
@@ -34,17 +34,10 @@ engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
 async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 async def init_db():
-    # Полностью уничтожаем движок, чтобы сбросить кеш SQLAlchemy
-    await engine.dispose()
-    
     async with engine.begin() as conn:
-        # 1. Удаляем таблицу, чтобы избавиться от старого типа INTEGER
-        await conn.execute(text("DROP TABLE IF EXISTS students;"))
-        print("Старая таблица удалена.")
-        
-        # 2. Создаем новую таблицу с явным указанием BIGINT
+        # Создаем новую таблицу с правильным типом BIGINT
         await conn.execute(text("""
-            CREATE TABLE students (
+            CREATE TABLE IF NOT EXISTS students_v2 (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR,
                 birthday VARCHAR,
@@ -52,7 +45,7 @@ async def init_db():
                 notify_all BOOLEAN DEFAULT FALSE
             );
         """))
-        print("Новая таблица создана с BIGINT!")
+        print("Таблица students_v2 готова к работе!")
 # --- БОТ ---
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
