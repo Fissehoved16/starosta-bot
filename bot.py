@@ -125,16 +125,15 @@ def get_notify_keyboard():
     ])
 
 # --- ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ КАЛЕНДАРЯ ---
-def get_calendar_keyboard(year: int, month: int):
+# action - это префикс, который будет в callback_data (add или view)
+def get_calendar_keyboard(year: int, month: int, action: str = "cal"):
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     
     month_names = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", 
                    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
     
-    # Кнопка с названием месяца
     kb.inline_keyboard.append([InlineKeyboardButton(text=f"{month_names[month-1]} {year}", callback_data="ignore")])
     
-    # Дни недели (Пн-Вс)
     kb.inline_keyboard.append([
         InlineKeyboardButton(text="Пн", callback_data="ignore"),
         InlineKeyboardButton(text="Вт", callback_data="ignore"),
@@ -145,8 +144,6 @@ def get_calendar_keyboard(year: int, month: int):
         InlineKeyboardButton(text="Вс", callback_data="ignore"),
     ])
     
-    # Получаем матрицу дней (недели) для месяца
-    # calendar.monthcalendar возвращает список недель, где 0 - пустые дни
     month_days = calendar.monthcalendar(year, month)
     
     for week in month_days:
@@ -155,18 +152,18 @@ def get_calendar_keyboard(year: int, month: int):
             if day == 0:
                 row.append(InlineKeyboardButton(text=" ", callback_data="ignore"))
             else:
-                row.append(InlineKeyboardButton(text=str(day), callback_data=f"cal_{year}_{month}_{day}"))
+                # Здесь мы добавляем action (add или view) в данные кнопки
+                row.append(InlineKeyboardButton(text=str(day), callback_data=f"{action}_{year}_{month}_{day}"))
         kb.inline_keyboard.append(row)
         
-    # Кнопки навигации
     prev_month = month - 1 if month > 1 else 12
     prev_year = year if month > 1 else year - 1
     next_month = month + 1 if month < 12 else 1
     next_year = year if month < 12 else year + 1
     
     kb.inline_keyboard.append([
-        InlineKeyboardButton(text="◀️", callback_data=f"calnav_{prev_year}_{prev_month}"),
-        InlineKeyboardButton(text="▶️", callback_data=f"calnav_{next_year}_{next_month}")
+        InlineKeyboardButton(text="◀️", callback_data=f"{action}nav_{prev_year}_{prev_month}"),
+        InlineKeyboardButton(text="▶️", callback_data=f"{action}nav_{next_year}_{next_month}")
     ])
     
     return kb
@@ -237,19 +234,20 @@ async def process_del_student(callback: types.CallbackQuery):
 @dp.callback_query(F.data == 'admin_add_schedule')
 async def admin_add_schedule(callback: types.CallbackQuery, state: FSMContext):
     now = datetime.now()
-    kb = get_calendar_keyboard(now.year, now.month)
+    # Передаем action="add", чтобы кнопки вели на добавление
+    kb = get_calendar_keyboard(now.year, now.month, action="add")
     await callback.message.edit_text("Выбери дату для новой пары:", reply_markup=kb)
     await callback.answer()
 
-@dp.callback_query(F.data.startswith('calnav_'))
-async def calendar_navigate(callback: types.CallbackQuery):
+@dp.callback_query(F.data.startswith('addnav_'))
+async def calendar_navigate_add(callback: types.CallbackQuery):
     parts = callback.data.split('_')
     year, month = int(parts[1]), int(parts[2])
-    kb = get_calendar_keyboard(year, month)
+    kb = get_calendar_keyboard(year, month, action="add")
     await callback.message.edit_reply_markup(reply_markup=kb)
     await callback.answer()
 
-@dp.callback_query(F.data.startswith('cal_'))
+@dp.callback_query(F.data.startswith('add_'))
 async def process_sched_date(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split('_')
     year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
@@ -361,10 +359,19 @@ async def process_del_schedule(callback: types.CallbackQuery):
 @dp.message(F.text == '📅 Расписание')
 async def schedule_menu(message: types.Message):
     now = datetime.now()
-    kb = get_calendar_keyboard(now.year, now.month)
+    # Передаем action="view", чтобы кнопки вели на просмотр
+    kb = get_calendar_keyboard(now.year, now.month, action="view")
     await message.answer("Выбери дату, чтобы посмотреть расписание:", reply_markup=kb)
 
-@dp.callback_query(F.data.startswith('viewcal_'))
+@dp.callback_query(F.data.startswith('viewnav_'))
+async def calendar_navigate_view(callback: types.CallbackQuery):
+    parts = callback.data.split('_')
+    year, month = int(parts[1]), int(parts[2])
+    kb = get_calendar_keyboard(year, month, action="view")
+    await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith('view_'))
 async def process_view_date(callback: types.CallbackQuery):
     parts = callback.data.split('_')
     year, month, day = int(parts[1]), int(parts[2]), int(parts[3])
