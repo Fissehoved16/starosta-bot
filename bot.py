@@ -1126,7 +1126,7 @@ async def process_view_date(callback: types.CallbackQuery):
         if len(btn_text) > 30: btn_text = btn_text[:27] + "..."
         
         # Если это староста, добавляем кнопку посещаемости
-                if callback.from_user.id == ADMIN_ID:
+        if callback.from_user.id == ADMIN_ID:
             buttons.append([InlineKeyboardButton(text=f"📊 {item.lesson_num}. {item.subject}", callback_data=f"mark_att_{item.id}")])
     
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_calendar_custom")])
