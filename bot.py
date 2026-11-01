@@ -575,7 +575,7 @@ async def mark_attendance(callback: types.CallbackQuery):
                 status = "❌"
             buttons.append([InlineKeyboardButton(text=f"{status} {s.name}", callback_data=f"att_toggle_{schedule_id}_{s.id}")])
         
-        buttons.append([InlineKeyboardButton(text="🔙 Готово", callback_data="admin_attendance")])
+        buttons.append([InlineKeyboardButton(text="🔙 Готово", callback_data="exit_to_menu")])
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
     except Exception as e:
@@ -585,26 +585,30 @@ async def mark_attendance(callback: types.CallbackQuery):
     
 @dp.callback_query(F.data.startswith('att_toggle_'))
 async def toggle_attendance(callback: types.CallbackQuery):
-    parts = callback.data.split('_')
-    schedule_id = int(parts[2])
-    student_id = int(parts[3])
-    
-    async with async_session() as session:
-        # Проверяем, есть ли уже отметка
-        result = await session.execute(select(Attendance).where(Attendance.schedule_id == schedule_id, Attendance.student_id == student_id))
-        existing = result.scalars().first()
+    try:
+        parts = callback.data.split('_')
+        schedule_id = int(parts[2])
+        student_id = int(parts[3])
         
-        if existing:
-            # Если есть — удаляем
-            await session.execute(delete(Attendance).where(Attendance.id == existing.id))
-        else:
-            # Если нет — добавляем
-            session.add(Attendance(schedule_id=schedule_id, student_id=student_id))
-        await session.commit()
-        
-    # Перерисовываем сообщение
-    await mark_attendance(callback)
-    await callback.answer()
+        async with async_session() as session:
+            # Проверяем, есть ли уже отметка
+            result = await session.execute(select(Attendance).where(Attendance.schedule_id == schedule_id, Attendance.student_id == student_id))
+            existing = result.scalars().first()
+            
+            if existing:
+                # Если есть — удаляем
+                await session.execute(delete(Attendance).where(Attendance.id == existing.id))
+            else:
+                # Если нет — добавляем
+                session.add(Attendance(schedule_id=schedule_id, student_id=student_id))
+            await session.commit()
+            
+        # Перерисовываем сообщение
+        await mark_attendance(callback)
+        await callback.answer()
+    except Exception as e:
+        await callback.message.answer(f"ОШИБКА ПРИ ОТМЕТКЕ: {e}")
+        await callback.answer()
 
 # --- ПРОСМОТР СТАТИСТИКИ (ВСЕ) ---
 @dp.callback_query(F.data == 'view_attendance_stats')
