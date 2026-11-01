@@ -350,6 +350,91 @@ async def hw_menu(message: types.Message):
 @dp.message(F.text == '📊 Посещаемость')
 async def student_attendance(message: types.Message):
     await view_attendance_stats_msg(message)
+
+@dp.callback_query(F.data.startswith('viewstat_'))
+async def show_student_stats(callback: types.CallbackQuery):
+    student_id = int(callback.data.split('_')[1])
+    
+    async with async_session() as session:
+        # Получаем студента
+        result = await session.execute(select(Student).where(Student.id == student_id))
+        student = result.scalars().first()
+        
+        # Получаем все пары
+        result = await session.execute(select(ScheduleItem))
+        all_lessons = result.scalars().all()
+        
+        # Получаем все отметки
+        result = await session.execute(select(Attendance))
+        all_att = result.scalars().all()
+        
+    if not student:
+        await callback.answer("Студент не найден.", show_alert=True)
+        return
+        
+    # Считаем общее количество пар по предметам и типам
+    total_stats = {} # {subj: {"Лекция": 0, "Семинар/Практика": 0}}
+    for lesson in all_lessons:
+        if lesson.subject not in total_stats:
+            total_stats[lesson.subject] = {"Лекция": 0, "Семинар/Практика": 0}
+            
+        if lesson.lesson_type == "Лекция":
+            total_stats[lesson.subject]["Лекция"] += 1
+        else:
+            total_stats[lesson.subject]["Семинар/Практика"] += 1
+            
+    # Считаем, сколько посетил
+    student_att = [a for a in all_att if a.student_id == student_id]
+    attended_stats = {} # {subj: {"Лекция": 0, "Семинар/Практика": 0}}
+    for att in student_att:
+        lesson = next((l for l in all_lessons if l.id == att.schedule_id), None)
+        if lesson:
+            if lesson.subject not in attended_stats:
+                attended_stats[lesson.subject] = {"Лекция": 0, "Семинар/Практика": 0}
+            if lesson.lesson_type == "Лекция":
+                attended_stats[lesson.subject]["Лекция"] += 1
+            else:
+                attended_stats[lesson.subject]["Семинар/Практика"] += 1
+
+    text = f"📊 **Статистика: {student.name}**\n\n"
+    
+    for subj, totals in total_stats.items():
+        att = attended_stats.get(subj, {"Лекция": 0, "Семинар/Практика": 0})
+        
+        text += f"📚 **{subj}**\n"
+        
+        # Лекции
+        if totals["Лекция"] > 0:
+            hours_att = att["Лекция"] * 2
+            hours_total = totals["Лекция"] * 2
+            text += f"  🔵 Лекции: {att['Лекция']}/{totals['Лекция']} пар ({hours_att}/{hours_total} ч.)\n"
+            
+        # Семинары и практики
+        if totals["Семинар/Практика"] > 0:
+            hours_att = att["Семинар/Практика"] * 2
+            hours_total = totals["Семинар/Практика"] * 2
+            text += f"  🟢 Семинары/Практики: {att['Семинар/Практика']}/{totals['Семинар/Практика']} пар ({hours_att}/{hours_total} ч.)\n"
+            
+        text += "\n"
+
+    buttons = [[InlineKeyboardButton(text="🔙 К списку", callback_data="stats_back")]]
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+@dp.callback_query(F.data == 'stats_back')
+async def stats_back(callback: types.CallbackQuery):
+    async with async_session() as session:
+        result = await session.execute(select(Student).order_by(Student.name))
+        students = result.scalars().all()
+        
+    text = "📊 **Статистика посещаемости:**\nНажми на студента, чтобы увидеть подробности:"
+    buttons = []
+    for s in students:
+        buttons.append([InlineKeyboardButton(text=f"👤 {s.name}", callback_data=f"viewstat_{s.id}")])
+        
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu")])
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
     
 @dp.callback_query(F.data.startswith('hwcalnav_'))
 async def hw_calendar_navigate(callback: types.CallbackQuery):
@@ -595,34 +680,17 @@ async def view_attendance_stats_msg(message: types.Message):
     async with async_session() as session:
         result = await session.execute(select(Student).order_by(Student.name))
         students = result.scalars().all()
-        result = await session.execute(select(ScheduleItem))
-        all_lessons = result.scalars().all()
-        result = await session.execute(select(Attendance))
-        all_att = result.scalars().all()
         
-    text = "📊 **Статистика посещаемости:**\n\n"
-    total_lessons_by_subject = {}
-    for lesson in all_lessons:
-        if lesson.subject not in total_lessons_by_subject:
-            total_lessons_by_subject[lesson.subject] = 0
-        total_lessons_by_subject[lesson.subject] += 1
+    if not students:
+        await message.answer("В группе пока нет студентов.")
+        return
         
+    text = "📊 **Статистика посещаемости:**\nНажми на студента, чтобы увидеть подробности:"
+    buttons = []
     for s in students:
-        text += f"👤 **{s.name}**\n"
-        student_att = [a for a in all_att if a.student_id == s.id]
-        for subj, total in total_lessons_by_subject.items():
-            attended = 0
-            for att in student_att:
-                lesson = next((l for l in all_lessons if l.id == att.schedule_id), None)
-                if lesson and lesson.subject == subj:
-                    attended += 1
-            if attended > 0 or total > 0:
-                hours = attended * 2
-                total_hours = total * 2
-                text += f"  • {subj}: {attended}/{total} пар ({hours}/{total_hours} акад. часов)\n"
-        text += "\n"
+        buttons.append([InlineKeyboardButton(text=f"👤 {s.name}", callback_data=f"viewstat_{s.id}")])
         
-    buttons = [[InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu")]]
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu")])
     await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     
 # --- СТУДЕНТЫ ---
