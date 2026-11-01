@@ -41,6 +41,7 @@ SUBJECTS = [
     "Безопастность жизнедеятельности",
     "Психологический тренинг рублево"
 ]
+
 LESSON_TYPES = ["Лекция", "Семинар", "Практика"]
 
 # --- БАЗА ДАННЫХ ---
@@ -55,10 +56,9 @@ class Student(Base):
     notify_all = Column(Boolean, default=False)
 
 class ScheduleItem(Base):
-    __tablename__ = 'schedule_items_v2'
+    __tablename__ = 'schedule_dates' # Новая таблица для дат
     id = Column(Integer, primary_key=True)
-    week_type = Column(Integer) # 1 - Верхняя, 2 - Нижняя
-    day_of_week = Column(Integer)
+    date_str = Column(String) # Храним как "02.11.2026"
     lesson_num = Column(Integer)
     subject = Column(String)
     lesson_type = Column(String)
@@ -75,8 +75,8 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.execute(text("CREATE TABLE IF NOT EXISTS students_v3 (id SERIAL PRIMARY KEY, name VARCHAR, birthday VARCHAR, telegram_id VARCHAR, notify_all BOOLEAN DEFAULT FALSE);"))
         await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS schedule_items_v2 (
-                id SERIAL PRIMARY KEY, week_type INTEGER, day_of_week INTEGER, lesson_num INTEGER, 
+            CREATE TABLE IF NOT EXISTS schedule_dates (
+                id SERIAL PRIMARY KEY, date_str VARCHAR, lesson_num INTEGER, 
                 subject VARCHAR, lesson_type VARCHAR, time_start VARCHAR, time_end VARCHAR
             );
         """))
@@ -91,8 +91,7 @@ class AddStudent(StatesGroup):
     birthday = State()
 
 class AddSchedule(StatesGroup):
-    week = State()
-    day = State()
+    date = State() # Состояние ожидания даты
     num = State()
 
 # --- КЛАВИАТУРЫ ---
@@ -125,9 +124,6 @@ def get_notify_keyboard():
         [InlineKeyboardButton(text='🔕 Не получать ДР', callback_data='notify_all_off')]
     ])
 
-DAYS = {1: "Понедельник", 2: "Вторник", 3: "Среда", 4: "Четверг", 5: "Пятница", 6: "Суббота"}
-WEEKS = {1: "Верхняя (нечетная)", 2: "Нижняя (четная)"}
-
 # --- ХЭНДЛЕРЫ ---
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
@@ -147,7 +143,7 @@ async def admin_back(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard(is_admin=True))
     await callback.answer()
 
-# --- СТУДЕНТЫ (АДМИН) ---
+# --- СТУДЕНТЫ ---
 @dp.callback_query(F.data == 'admin_add_student')
 async def admin_add_student(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("Введи имя и фамилию студента:")
@@ -190,49 +186,42 @@ async def process_del_student(callback: types.CallbackQuery):
     await callback.message.answer("Студент удален.")
     await admin_del_student(callback)
 
-# --- РАСПИСАНИЕ (ДОБАВЛЕНИЕ) ---
+# --- ДОБАВЛЕНИЕ ПАРЫ (ПО ДАТАМ) ---
 @dp.callback_query(F.data == 'admin_add_schedule')
 async def admin_add_schedule(callback: types.CallbackQuery, state: FSMContext):
-    buttons = [
-        [InlineKeyboardButton(text=WEEKS[1], callback_data=f"setweek_1")],
-        [InlineKeyboardButton(text=WEEKS[2], callback_data=f"setweek_2")],
-        [InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")]
-    ]
-    await callback.message.edit_text("Выбери неделю:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await state.set_state(AddSchedule.week)
+    await callback.message.answer("Введи дату пары (в формате ДД.ММ.ГГГГ, например 02.11.2026):")
+    await state.set_state(AddSchedule.date)
     await callback.answer()
 
-@dp.callback_query(F.data.startswith('setweek_'))
-async def process_sched_week(callback: types.CallbackQuery, state: FSMContext):
-    week_num = int(callback.data.split('_')[1])
-    await state.update_data(week=week_num)
-    buttons = [[InlineKeyboardButton(text=name, callback_data=f"setday_{num}")] for num, name in DAYS.items()]
-    buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
-    await callback.message.edit_text(f"Неделя: {WEEKS[week_num]}\nВыбери день:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await state.set_state(AddSchedule.day)
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith('setday_'))
-async def process_sched_day(callback: types.CallbackQuery, state: FSMContext):
-    day_num = int(callback.data.split('_')[1])
-    await state.update_data(day=day_num)
+@dp.message(AddSchedule.date)
+async def process_sched_date(message: types.Message, state: FSMContext):
+    date_str = message.text
+    # Простая проверка формата
+    if len(date_str) != 10 or date_str[2] != '.' or date_str[5] != '.':
+        await message.answer("Неверный формат. Введи дату как ДД.ММ.ГГГГ (например, 02.11.2026):")
+        return
+        
+    await state.update_data(date=date_str)
+    
     buttons = []
     for num, time in TIME_SLOTS.items():
         buttons.append([InlineKeyboardButton(text=f"{num} пара ({time})", callback_data=f"setnum_{num}")])
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
-    await callback.message.edit_text("Выбери номер пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    
+    await message.answer(f"Дата: {date_str}\nВыбери номер пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await state.set_state(AddSchedule.num)
-    await callback.answer()
 
 @dp.callback_query(F.data.startswith('setnum_'))
 async def process_sched_num(callback: types.CallbackQuery, state: FSMContext):
     num = int(callback.data.split('_')[1])
     await state.update_data(num=num)
+    
     buttons = []
     for idx, subj in enumerate(SUBJECTS):
         btn_text = subj if len(subj) < 25 else subj[:22] + "..."
         buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"subj_{idx}")])
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
+    
     await callback.message.edit_text("Выбери предмет:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
@@ -241,6 +230,7 @@ async def process_sched_subject(callback: types.CallbackQuery, state: FSMContext
     idx = int(callback.data.split('_')[1])
     subject = SUBJECTS[idx]
     await state.update_data(subject=subject)
+    
     buttons = [[InlineKeyboardButton(text=l_type, callback_data=f"type_{l_type}")] for l_type in LESSON_TYPES]
     await callback.message.edit_text(f"Предмет: {subject}\nВыбери тип пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
@@ -250,31 +240,58 @@ async def process_sched_type(callback: types.CallbackQuery, state: FSMContext):
     lesson_type = callback.data.split('_')[1]
     data = await state.get_data()
     time_slot = TIME_SLOTS[data['num']].split(' - ')
+    
     async with async_session() as session:
         new_item = ScheduleItem(
-            week_type=data['week'], day_of_week=data['day'], lesson_num=data['num'], 
+            date_str=data['date'], lesson_num=data['num'], 
             subject=data['subject'], lesson_type=lesson_type, 
             time_start=time_slot[0], time_end=time_slot[1]
         )
         session.add(new_item)
         await session.commit()
-    await callback.message.edit_text(f"✅ Пара добавлена:\n{WEEKS[data['week']]}, {DAYS[data['day']]}, {data['num']} пара\n{data['subject']} ({lesson_type})")
-    await state.clear()
+    
+    # Возможность добавить ещё одну пару на эту же дату
+    buttons = [[InlineKeyboardButton(text="➕ Добавить ещё на эту дату", callback_data="add_more_sched")],
+               [InlineKeyboardButton(text="✅ Закончить", callback_data="admin_back")]]
+    
+    await callback.message.edit_text(
+        f"✅ Пара добавлена:\n{data['date']}, {data['num']} пара\n{data['subject']} ({lesson_type})", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+    # Сохраняем дату в состоянии, чтобы не вводить её снова
+    await state.update_data(date=data['date']) 
     await callback.answer()
 
-# --- РАСПИСАНИЕ (УДАЛЕНИЕ) ---
+@dp.callback_query(F.data == 'add_more_sched')
+async def add_more_sched(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    date_str = data.get('date')
+    
+    buttons = []
+    for num, time in TIME_SLOTS.items():
+        buttons.append([InlineKeyboardButton(text=f"{num} пара ({time})", callback_data=f"setnum_{num}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")])
+    
+    await callback.message.edit_text(f"Дата: {date_str}\nВыбери номер следующей пары:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await state.set_state(AddSchedule.num)
+    await callback.answer()
+
+# --- УДАЛЕНИЕ ПАРЫ ---
 @dp.callback_query(F.data == 'admin_del_schedule')
 async def admin_del_schedule(callback: types.CallbackQuery):
     async with async_session() as session:
-        result = await session.execute(select(ScheduleItem).order_by(ScheduleItem.week_type, ScheduleItem.day_of_week, ScheduleItem.lesson_num))
+        result = await session.execute(select(ScheduleItem).order_by(ScheduleItem.date_str, ScheduleItem.lesson_num))
         items = result.scalars().all()
+    
     if not items:
         await callback.message.answer("Расписание пусто."); return
+    
     buttons = []
     for i in items:
-        text = f"{WEEKS[i.week_type][:3]} | {DAYS[i.day_of_week]} | {i.lesson_num}. {i.subject}"
+        text = f"{i.date_str} | {i.lesson_num}. {i.subject}"
         buttons.append([InlineKeyboardButton(text=f"🗑 {text}", callback_data=f"del_sched_{i.id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    
     await callback.message.edit_text("Нажми на пару, чтобы удалить её:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
@@ -287,60 +304,41 @@ async def process_del_schedule(callback: types.CallbackQuery):
     await callback.message.answer("Пара удалена.")
     await admin_del_schedule(callback)
 
-# --- ПРОСМОТР РАСПИСАНИЯ (ДЛЯ ВСЕХ) ---
+# --- ПРОСМОТР РАСПИСАНИЯ (ДЛЯ СТУДЕНТОВ) ---
 @dp.message(F.text == '📅 Расписание')
 async def schedule_menu(message: types.Message):
-    buttons = [
-        [InlineKeyboardButton(text=WEEKS[1], callback_data="view_week_1")],
-        [InlineKeyboardButton(text=WEEKS[2], callback_data="view_week_2")]
-    ]
-    await message.answer("Выбери неделю:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await message.answer("Введи дату, на которую хочешь посмотреть расписание (в формате ДД.ММ.ГГГГ):\n\nНапример: 02.11.2026", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='🔙 Назад в меню')]], resize_keyboard=True))
 
-@dp.callback_query(F.data.startswith('view_week_'))
-async def show_week_days(callback: types.CallbackQuery):
-    week_num = int(callback.data.split('_')[2])
-    buttons = [[InlineKeyboardButton(text=name, callback_data=f"viewday_{week_num}_{num}")] for num, name in DAYS.items()]
-    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
-    await callback.message.edit_text(f"Неделя: {WEEKS[week_num]}\nВыбери день:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
-
-@dp.callback_query(F.data == 'back_to_main')
-async def back_to_main(callback: types.CallbackQuery):
-    buttons = [
-        [InlineKeyboardButton(text=WEEKS[1], callback_data="view_week_1")],
-        [InlineKeyboardButton(text=WEEKS[2], callback_data="view_week_2")]
-    ]
-    await callback.message.edit_text("Выбери неделю:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith('viewday_'))
-async def show_day_schedule(callback: types.CallbackQuery):
-    parts = callback.data.split('_')
-    week_num = int(parts[1])
-    day_num = int(parts[2])
-    
+# Обработка ввода даты студентом
+@dp.message(F.text.regexp(r'^\d{2}\.\d{2}\.\d{4}$'))
+async def show_schedule_by_date(message: types.Message):
+    date_str = message.text
     async with async_session() as session:
-        result = await session.execute(
-            select(ScheduleItem).where(ScheduleItem.week_type == week_num, ScheduleItem.day_of_week == day_num).order_by(ScheduleItem.lesson_num)
-        )
+        result = await session.execute(select(ScheduleItem).where(ScheduleItem.date_str == date_str).order_by(ScheduleItem.lesson_num))
         items = result.scalars().all()
     
-    text = f"📅 **{DAYS[day_num]}** ({WEEKS[week_num]})\n\n"
-    buttons = []
     if not items:
-        text += "Пар нет."
-    else:
-        unique_items = []
-        for item in items:
-            if not any(u.subject == item.subject for u in unique_items):
-                unique_items.append(item)
-            text += f"{item.lesson_num}. {item.time_start}-{item.time_end} — {item.subject} ({item.lesson_type})\n"
-        for item in unique_items:
-            buttons.append([InlineKeyboardButton(text=item.subject, callback_data=f"viewsub_{item.id}")])
+        await message.answer(f"📅 На {date_str} пар нет.")
+        return
+        
+    text = f"📅 **Расписание на {date_str}**\n\n"
+    buttons = []
+    unique_items = []
     
-    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_week_{week_num}")])
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
+    for item in items:
+        if not any(u.subject == item.subject for u in unique_items):
+            unique_items.append(item)
+        text += f"{item.lesson_num}. {item.time_start}-{item.time_end} — {item.subject} ({item.lesson_type})\n"
+    
+    for item in unique_items:
+        buttons.append([InlineKeyboardButton(text=item.subject, callback_data=f"viewsub_{item.id}")])
+    
+    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.message(F.text == '🔙 Назад в меню')
+async def back_to_menu(message: types.Message):
+    is_admin = message.from_user.id == ADMIN_ID
+    await message.answer("Главное меню:", reply_markup=get_main_keyboard(is_admin))
 
 @dp.callback_query(F.data.startswith('viewsub_'))
 async def show_subject_details(callback: types.CallbackQuery):
@@ -351,7 +349,7 @@ async def show_subject_details(callback: types.CallbackQuery):
     await callback.message.answer(f"📚 Материалы по предмету **{item.subject}** ({item.lesson_type}) скоро появятся тут!", parse_mode="Markdown")
     await callback.answer()
 
-# --- СПИСОК ГРУППЫ И РЕГИСТРАЦИЯ (ДЛЯ ВСЕХ) ---
+# --- СПИСОК ГРУППЫ ---
 @dp.message(F.text == '👥 Список группы')
 async def show_group(message: types.Message):
     async with async_session() as session:
@@ -363,7 +361,6 @@ async def show_group(message: types.Message):
     for s in students:
         status = "✅" if s.telegram_id else "❌"
         text += f"• {s.name} — 🎂 {s.birthday} (в боте: {status})\n"
-    # Кнопка регистрации видна ВСЕМ (включая старосту)
     await message.answer(text, parse_mode="Markdown", reply_markup=get_group_keyboard())
 
 @dp.callback_query(F.data == 'reg_student')
@@ -440,7 +437,7 @@ async def web_server():
 async def main():
     await init_db()
     asyncio.create_task(web_server())
-    print('Бот запущен!')
+    print('Бот запущен с расписанием по датам!')
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
