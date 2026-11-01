@@ -349,8 +349,8 @@ async def hw_menu(message: types.Message):
 
 @dp.message(F.text == '📊 Посещаемость')
 async def student_attendance(message: types.Message):
-    await view_attendance_stats(message) # Вызываем ту же функцию
-
+    await view_attendance_stats_msg(message)
+    
 @dp.callback_query(F.data.startswith('hwcalnav_'))
 async def hw_calendar_navigate(callback: types.CallbackQuery):
     parts = callback.data.split('_')
@@ -557,21 +557,23 @@ async def mark_attendance(callback: types.CallbackQuery):
         att_records = result.scalars().all()
         present_ids = [a.student_id for a in att_records]
 
+    if not item:
+        await callback.answer("Пара не найдена.", show_alert=True)
+        return
+
     text = f"📊 **Посещаемость:** {item.subject} ({item.date_str})\n\n"
     buttons = []
     for s in students:
         if s.id in present_ids:
             status = "✅"
-            btn_text = f"{status} {s.name}"
         else:
             status = "❌"
-            btn_text = f"{status} {s.name}"
-        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"att_toggle_{schedule_id}_{s.id}")])
+        buttons.append([InlineKeyboardButton(text=f"{status} {s.name}", callback_data=f"att_toggle_{schedule_id}_{s.id}")])
     
     buttons.append([InlineKeyboardButton(text="🔙 Готово", callback_data="admin_attendance")])
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
-
+    
 @dp.callback_query(F.data.startswith('att_toggle_'))
 async def toggle_attendance(callback: types.CallbackQuery):
     parts = callback.data.split('_')
@@ -639,6 +641,40 @@ async def view_attendance_stats(callback: types.CallbackQuery):
     buttons = [[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]]
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
+
+async def view_attendance_stats_msg(message: types.Message):
+    async with async_session() as session:
+        result = await session.execute(select(Student).order_by(Student.name))
+        students = result.scalars().all()
+        result = await session.execute(select(ScheduleItem))
+        all_lessons = result.scalars().all()
+        result = await session.execute(select(Attendance))
+        all_att = result.scalars().all()
+        
+    text = "📊 **Статистика посещаемости:**\n\n"
+    total_lessons_by_subject = {}
+    for lesson in all_lessons:
+        if lesson.subject not in total_lessons_by_subject:
+            total_lessons_by_subject[lesson.subject] = 0
+        total_lessons_by_subject[lesson.subject] += 1
+        
+    for s in students:
+        text += f"👤 **{s.name}**\n"
+        student_att = [a for a in all_att if a.student_id == s.id]
+        for subj, total in total_lessons_by_subject.items():
+            attended = 0
+            for att in student_att:
+                lesson = next((l for l in all_lessons if l.id == att.schedule_id), None)
+                if lesson and lesson.subject == subj:
+                    attended += 1
+            if attended > 0 or total > 0:
+                hours = attended * 2
+                total_hours = total * 2
+                text += f"  • {subj}: {attended}/{total} пар ({hours}/{total_hours} акад. часов)\n"
+        text += "\n"
+        
+    buttons = [[InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu")]]
+    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     
 # --- СТУДЕНТЫ ---
 @dp.callback_query(F.data == 'admin_add_student')
@@ -1079,13 +1115,18 @@ async def process_view_date(callback: types.CallbackQuery):
         text += f"{item.lesson_num}. {item.time_start}-{item.time_end} {emoji} **{item.subject}** ({item.lesson_type})\n"
         btn_text = f"{emoji} {item.subject}"
         if len(btn_text) > 30: btn_text = btn_text[:27] + "..."
-        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"viewsub_{item.id}")])
+        
+        # Если это староста, добавляем кнопку посещаемости
+        if callback.from_user.id == ADMIN_ID:
+            buttons.append([InlineKeyboardButton(text=f"📊 {item.lesson_num}. {item.subject}", callback_data=f"att_lesson_{item.id}")])
+        else:
+            buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"viewsub_{item.id}")])
     
-    # Кнопка "Назад" добавляется ОДИН РАЗ после цикла
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_calendar_custom")])
     
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
+    
 @dp.callback_query(F.data == 'back_to_calendar_custom')
 async def back_to_calendar(callback: types.CallbackQuery):
     now = datetime.now()
