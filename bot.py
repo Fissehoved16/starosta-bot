@@ -20,11 +20,11 @@ ADMIN_ID = 8493824882
 Base = declarative_base()
 
 class Student(Base):
-    __tablename__ = 'students_v2'
+    __tablename__ = 'students_v3'
     id = Column(Integer, primary_key=True)
     name = Column(String)
     birthday = Column(String)
-    telegram_id = Column(Integer, nullable=True) # Телеграм ID студента
+    telegram_id = Column(String, nullable=True) # Телеграм ID студента
     notify_all = Column(Boolean, default=False) # Хочет ли получать все ДР
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
@@ -35,17 +35,16 @@ async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession
 
 async def init_db():
     async with engine.begin() as conn:
-        # Создаем новую таблицу с правильным типом BIGINT
         await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS students_v2 (
+            CREATE TABLE IF NOT EXISTS students_v3 (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR,
                 birthday VARCHAR,
-                telegram_id BIGINT,
+                telegram_id VARCHAR,
                 notify_all BOOLEAN DEFAULT FALSE
             );
         """))
-        print("Таблица students_v2 готова к работе!")
+        print("Таблица students_v3 с текстовым ID готова!")
 # --- БОТ ---
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
