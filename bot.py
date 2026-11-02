@@ -17,6 +17,8 @@ import calendar
 TOKEN = os.getenv("BOT_TOKEN", "9280509373:AAG1-6DJiYDwDJ8fOVsTsfxrrcDlpdCB2oY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = 8493824882 
+# Сюда впиши ID всех замов через запятую
+DEPUTY_IDS = [1891628483, 8217663441]
 
 # --- ШАБЛОНЫ ВРЕМЕНИ ---
 TIME_SLOTS = {
@@ -152,16 +154,16 @@ class AddNote(StatesGroup):
     waiting_for_content = State()
 
 # --- КЛАВИАТУРЫ ---
-def get_main_keyboard(is_admin=False):
+def get_main_keyboard(admin_flag=False):
     keyboard = [
         [KeyboardButton(text='📅 Расписание'), KeyboardButton(text='📚 ДЗ')],
         [KeyboardButton(text='👥 Список группы'), KeyboardButton(text='📝 Заметки')],
-        [KeyboardButton(text='📊 Посещаемость')], # <-- НОВАЯ КНОПКА
+        [KeyboardButton(text='📊 Посещаемость')],
     ]
-    if is_admin:
+    if admin_flag:
         keyboard.append([KeyboardButton(text='⚙️ Админ-панель')])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
-
+    
 def get_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='➕ Добавить студента', callback_data='admin_add_student')],
@@ -223,11 +225,16 @@ def get_calendar_keyboard(year: int, month: int, action: str = "cal"):
     ])
     return kb
 
+# --- ФУНКЦИЯ ПРОВЕРКИ ПРАВ (без декоратора!) ---
+def is_admin(user_id: int) -> bool:
+    """Проверяет, является ли пользователь старостой или замом."""
+    return user_id == ADMIN_ID or user_id in DEPUTY_IDS
+
 # --- ХЭНДЛЕРЫ ---
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
-    is_admin = message.from_user.id == ADMIN_ID
-    await message.answer(f'Привет, {message.from_user.first_name}! 👋\nЯ бот-староста.', reply_markup=get_main_keyboard(is_admin))
+    admin_flag = is_admin(message.from_user.id)
+    await message.answer(f'Привет, {message.from_user.first_name}! 👋\nЯ бот-староста.', reply_markup=get_main_keyboard(admin_flag))
 
 # --- АДМИН-ПАНЕЛЬ ---
 @dp.message(F.text == '⚙️ Админ-панель')
