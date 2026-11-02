@@ -1343,9 +1343,28 @@ async def web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
+async def keep_alive():
+    # Ждем 10 секунд при старте, чтобы сервер успел подняться
+    await asyncio.sleep(10)
+    
+    # Render выдает нам URL, но внутри контейнера мы можем стучаться на localhost
+    url = "http://localhost:8080/" 
+    
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(url) as response:
+                    print(f"Пинг успешен, статус: {response.status}")
+            except Exception as e:
+                print(f"Ошибка пинга: {e}")
+            
+            # Ждем 5 минут (300 секунд)
+            await asyncio.sleep(300)
+
 async def main():
     await init_db()
     asyncio.create_task(web_server())
+    asyncio.create_task(keep_alive()) # <-- ДОБАВИТЬ ЭТУ СТРОКУ
     print('Бот запущен!')
     await dp.start_polling(bot)
 
