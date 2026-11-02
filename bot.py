@@ -26,13 +26,20 @@ TIME_SLOTS = {
 
 # --- ШАБЛОНЫ ПРЕДМЕТОВ ---
 SUBJECTS = [
-    "История России", "Информатика и программирование", "Основы Российской государственности",
-    "Математический анализ", "Дискретная математика", "Алгебра и теория чисел",
-    "Базовая физическая культура", "Архитектура вычислительных систем и компьютерных систем",
-    "Иностранный язык", "Факультатив:система рельефно-точечного шрифта",
-    "Безопастность жизнедеятельности", "Психологический тренинг рублево", "Физическая культура и спорт"
+    "Алгебра и теория чисел",
+    "Архитектура вычислительных систем и компьютерных систем",
+    "Базовая физическая культура",
+    "Безопастность жизнедеятельности",
+    "Дискретная математика",
+    "Иностранный язык",
+    "Информатика и программирование",
+    "История России",
+    "Математический анализ",
+    "Основы Российской государственности",
+    "Психологический тренинг рублево",
+    "Факультатив:система рельефно-точечного шрифта",
+    "Физическая культура и спорт"
 ]
-
 LESSON_TYPES = ["Лекция", "Семинар", "Практика"]
 
 TYPE_EMOJI = {
@@ -512,6 +519,64 @@ async def process_hw_date(callback: types.CallbackQuery):
     date_str = f"{day:02d}.{month:02d}.{year}"
     await render_hw_list(callback, date_str, is_edit=True)
     await callback.answer()
+
+async def render_hw_list(callback_or_message, date_str, is_edit=True):
+    user_id = str(callback_or_message.from_user.id)
+    async with async_session() as session:
+        result = await session.execute(select(Student).where(Student.telegram_id == user_id))
+        student = result.scalars().first()
+        
+    if not student and callback_or_message.from_user.id != ADMIN_ID:
+        text = "Ты не зарегистрирован в боте. Нажми 'Список группы' и зарегистрируйся."
+        if is_edit: await callback_or_message.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="hwcalnav_back")]]))
+        else: await callback_or_message.answer(text)
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(ScheduleItem).where(ScheduleItem.date_str == date_str).order_by(ScheduleItem.lesson_num))
+        items = result.scalars().all()
+        
+    if not items:
+        text = f"На {date_str} пар и ДЗ нет."
+        if is_edit: await callback_or_message.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="hwcalnav_back")]]))
+        else: await callback_or_message.answer(text)
+        return
+        
+    text = f"📚 **ДЗ на {date_str}**\n\n"
+    buttons = []
+    for item in items:
+        emoji = TYPE_EMOJI.get(item.lesson_type, "⚪")
+        async with async_session() as session:
+            result = await session.execute(select(Homework).where(Homework.schedule_id == item.id))
+            hws = result.scalars().all()
+            
+        if hws:
+            text += f"{emoji} **{item.subject}**\n"
+            for hw in hws:
+                is_completed = False
+                if student:
+                    async with async_session() as session:
+                        res_comp = await session.execute(select(CompletedHomework).where(CompletedHomework.student_id == student.id, CompletedHomework.homework_id == hw.id))
+                        if res_comp.scalars().first(): is_completed = True
+                            
+                if is_completed:
+                    text += f"  ~~{hw.content}~~ (сделано)\n"
+                    buttons.append([InlineKeyboardButton(text=f"❌ Отменить: {hw.content[:20]}", callback_data=f"uncheck_{hw.id}_{date_str}")])
+                else:
+                    text += f"  • {hw.content}\n"
+                    buttons.append([InlineKeyboardButton(text=f"✅ Сделано: {hw.content[:20]}", callback_data=f"check_{hw.id}_{date_str}")])
+                    
+                if hw.file_id:
+                    buttons.append([InlineKeyboardButton(text=f"📎 Файл к {hw.content[:15]}", callback_data=f"sendfile_{hw.id}")])
+        else:
+            text += f"{emoji} {item.subject} — *ДЗ нет*\n"
+        text += "\n"
+        
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="hwcalnav_back")])
+    if is_edit:
+        await callback_or_message.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    else:
+        await callback_or_message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @dp.callback_query(F.data.startswith('check_'))
 async def mark_hw_done(callback: types.CallbackQuery):
