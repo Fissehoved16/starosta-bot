@@ -239,7 +239,7 @@ async def cmd_start(message: types.Message):
 # --- АДМИН-ПАНЕЛЬ ---
 @dp.message(F.text == '⚙️ Админ-панель')
 async def admin_panel(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
+    if not is_admin(message.from_user.id): return
     await message.answer("Админ-панель:", reply_markup=get_admin_keyboard())
 
 @dp.callback_query(F.data == 'admin_back')
@@ -251,21 +251,21 @@ async def admin_back(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == 'exit_to_menu')
 async def exit_to_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    is_admin = callback.from_user.id == ADMIN_ID
+    is_admin_flag = is_admin(callback.from_user.id)
     await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard(is_admin))
     await callback.answer()
     
 @dp.callback_query(F.data.endswith('_exit_calendar'))
 async def exit_calendar(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    is_admin = callback.from_user.id == ADMIN_ID
+    is_admin_flag = is_admin(callback.from_user.id)
     await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard(is_admin))
     await callback.answer()
 
 # --- БЫСТРЫЙ ВВОД ДЗ ---
 @dp.message(F.text.regexp(r'(?i)^\d{1,2}\s+[а-яА-Я]+\s+дз$'))
 async def quick_homework_start(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if not is_admin(message.from_user.id): return.
     date_text = message.text.lower().replace("дз", "").strip()
     now = datetime.now()
     year = now.year
@@ -371,7 +371,7 @@ async def view_attendance_stats_msg(message: types.Message):
         current_student = result.scalars().first()
         
         # Если это не староста, показываем только его статистику
-        if message.from_user.id != ADMIN_ID:
+        if not is_admin(message.from_user.id):
             if not current_student:
                 await message.answer("Ты не зарегистрирован в боте. Нажми 'Список группы' и привяжи аккаунт.")
                 return
@@ -533,7 +533,7 @@ async def render_hw_list(callback_or_message, date_str, is_edit=True):
         result = await session.execute(select(Student).where(Student.telegram_id == user_id))
         student = result.scalars().first()
         
-    if not student and callback_or_message.from_user.id != ADMIN_ID:
+    if not student and not is_admin(callback_or_message.from_user.id):
         text = "Ты не зарегистрирован в боте. Нажми 'Список группы' и зарегистрируйся."
         if is_edit: await callback_or_message.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="hwcalnav_back")]]))
         else: await callback_or_message.answer(text)
@@ -644,7 +644,7 @@ async def show_subject_details(callback: types.CallbackQuery):
             text += f"• {hw.content}\n"
             if hw.file_id:
                 buttons.append([InlineKeyboardButton(text="📎 Прикрепленный файл", callback_data=f"sendfile_{hw.id}")])
-    if callback.from_user.id == ADMIN_ID:
+    if is_admin(callback.from_user.id):
         buttons.append([InlineKeyboardButton(text="📝 Добавить ДЗ", callback_data=f"addhw_{item.id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_{item.date_str[6:]}_{item.date_str[3:5]}_{item.date_str[:2]}")])
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -1100,7 +1100,7 @@ async def save_note(message: types.Message, state: FSMContext):
     await message.answer("✅ Заметка добавлена!")
     await state.clear()
     
-    if message.from_user.id == ADMIN_ID:
+    if is_admin(message.from_user.id):
         await message.answer("Заметка сохранена для студента.", reply_markup=get_main_keyboard(is_admin=True))
     else:
         await notes_menu(message)
@@ -1309,7 +1309,7 @@ async def process_view_date(callback: types.CallbackQuery):
         if len(btn_text) > 30: btn_text = btn_text[:27] + "..."
         
         # Если это староста, добавляем кнопку посещаемости
-        if callback.from_user.id == ADMIN_ID:
+        if is_admin(callback.from_user.id):
             buttons.append([InlineKeyboardButton(text=f"📊 {item.lesson_num}. {item.subject}", callback_data=f"attselect_{item.id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_calendar_custom")])
     
