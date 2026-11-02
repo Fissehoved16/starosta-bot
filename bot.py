@@ -379,21 +379,64 @@ async def view_attendance_stats_msg(message: types.Message):
         
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu")])
     await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    
-@dp.callback_query(F.data.startswith('viewstat_'))
-async def show_student_stats(callback: types.CallbackQuery):
-    student_id = int(callback.data.split('_')[1])
-    
+
+async def show_student_stats_for_user(message: types.Message, student):
     async with async_session() as session:
-        # Получаем студента
-        result = await session.execute(select(Student).where(Student.id == student_id))
-        student = result.scalars().first()
-        
-        # Получаем все пары
         result = await session.execute(select(ScheduleItem))
         all_lessons = result.scalars().all()
         
-        # Получаем все отметки
+        result = await session.execute(select(Attendance).where(Attendance.student_id == student.id))
+        student_att = result.scalars().all()
+        
+    total_stats = {}
+    for lesson in all_lessons:
+        if lesson.subject not in total_stats:
+            total_stats[lesson.subject] = {"Лекция": 0, "Семинар/Практика": 0}
+        if lesson.lesson_type == "Лекция":
+            total_stats[lesson.subject]["Лекция"] += 1
+        else:
+            total_stats[lesson.subject]["Семинар/Практика"] += 1
+            
+    attended_stats = {}
+    for att in student_att:
+        lesson = next((l for l in all_lessons if l.id == att.schedule_id), None)
+        if lesson:
+            if lesson.subject not in attended_stats:
+                attended_stats[lesson.subject] = {"Лекция": 0, "Семинар/Практика": 0}
+            if lesson.lesson_type == "Лекция":
+                attended_stats[lesson.subject]["Лекция"] += 1
+            else:
+                attended_stats[lesson.subject]["Семинар/Практика"] += 1
+
+    text = f"📊 **Твоя посещаемость:**\n\n"
+    has_data = False
+    for subj, totals in total_stats.items():
+        att = attended_stats.get(subj, {"Лекция": 0, "Семинар/Практика": 0})
+        if totals["Лекция"] > 0 or totals["Семинар/Практика"] > 0:
+            has_data = True
+            text += f"📚 **{subj}**\n"
+            if totals["Лекция"] > 0:
+                text += f"  🔵 Лекции: {att['Лекция']}/{totals['Лекция']} пар ({att['Лекция']*2}/{totals['Лекция']*2} ч.)\n"
+            if totals["Семинар/Практика"] > 0:
+                text += f"  🟢 Семинары/Практики: {att['Семинар/Практика']}/{totals['Семинар/Практика']} пар ({att['Семинар/Практика']*2}/{totals['Семинар/Практика']*2} ч.)\n"
+            text += "\n"
+
+    if not has_data:
+        text += "Пока нет данных о посещаемости."
+
+    buttons = [[InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu")]]
+    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data.startswith('viewstat_'))
+async def show_student_stats(callback: types.CallbackQuery):
+    student_id = int(callback.data.split('_')[1])
+    async with async_session() as session:
+        result = await session.execute(select(Student).where(Student.id == student_id))
+        student = result.scalars().first()
+        
+        result = await session.execute(select(ScheduleItem))
+        all_lessons = result.scalars().all()
+        
         result = await session.execute(select(Attendance))
         all_att = result.scalars().all()
         
@@ -401,20 +444,17 @@ async def show_student_stats(callback: types.CallbackQuery):
         await callback.answer("Студент не найден.", show_alert=True)
         return
         
-    # Считаем общее количество пар по предметам и типам
-    total_stats = {} # {subj: {"Лекция": 0, "Семинар/Практика": 0}}
+    total_stats = {}
     for lesson in all_lessons:
         if lesson.subject not in total_stats:
             total_stats[lesson.subject] = {"Лекция": 0, "Семинар/Практика": 0}
-            
         if lesson.lesson_type == "Лекция":
             total_stats[lesson.subject]["Лекция"] += 1
         else:
             total_stats[lesson.subject]["Семинар/Практика"] += 1
             
-    # Считаем, сколько посетил
     student_att = [a for a in all_att if a.student_id == student_id]
-    attended_stats = {} # {subj: {"Лекция": 0, "Семинар/Практика": 0}}
+    attended_stats = {}
     for att in student_att:
         lesson = next((l for l in all_lessons if l.id == att.schedule_id), None)
         if lesson:
@@ -426,24 +466,13 @@ async def show_student_stats(callback: types.CallbackQuery):
                 attended_stats[lesson.subject]["Семинар/Практика"] += 1
 
     text = f"📊 **Статистика: {student.name}**\n\n"
-    
     for subj, totals in total_stats.items():
         att = attended_stats.get(subj, {"Лекция": 0, "Семинар/Практика": 0})
-        
         text += f"📚 **{subj}**\n"
-        
-        # Лекции
         if totals["Лекция"] > 0:
-            hours_att = att["Лекция"] * 2
-            hours_total = totals["Лекция"] * 2
-            text += f"  🔵 Лекции: {att['Лекция']}/{totals['Лекция']} пар ({hours_att}/{hours_total} ч.)\n"
-            
-        # Семинары и практики
+            text += f"  🔵 Лекции: {att['Лекция']}/{totals['Лекция']} пар ({att['Лекция']*2}/{totals['Лекция']*2} ч.)\n"
         if totals["Семинар/Практика"] > 0:
-            hours_att = att["Семинар/Практика"] * 2
-            hours_total = totals["Семинар/Практика"] * 2
-            text += f"  🟢 Семинары/Практики: {att['Семинар/Практика']}/{totals['Семинар/Практика']} пар ({hours_att}/{hours_total} ч.)\n"
-            
+            text += f"  🟢 Семинары/Практики: {att['Семинар/Практика']}/{totals['Семинар/Практика']} пар ({att['Семинар/Практика']*2}/{totals['Семинар/Практика']*2} ч.)\n"
         text += "\n"
 
     buttons = [[InlineKeyboardButton(text="🔙 К списку", callback_data="stats_back")]]
@@ -455,12 +484,10 @@ async def stats_back(callback: types.CallbackQuery):
     async with async_session() as session:
         result = await session.execute(select(Student).order_by(Student.name))
         students = result.scalars().all()
-        
     text = "📊 **Статистика посещаемости:**\nНажми на студента, чтобы увидеть подробности:"
     buttons = []
     for s in students:
         buttons.append([InlineKeyboardButton(text=f"👤 {s.name}", callback_data=f"viewstat_{s.id}")])
-        
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="exit_to_menu")])
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
