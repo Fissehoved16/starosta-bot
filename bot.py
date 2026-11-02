@@ -265,7 +265,8 @@ async def exit_calendar(callback: types.CallbackQuery, state: FSMContext):
 # --- БЫСТРЫЙ ВВОД ДЗ ---
 @dp.message(F.text.regexp(r'(?i)^\d{1,2}\s+[а-яА-Я]+\s+дз$'))
 async def quick_homework_start(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id): return.
+    if not is_admin(message.from_user.id): 
+        return
     date_text = message.text.lower().replace("дз", "").strip()
     now = datetime.now()
     year = now.year
