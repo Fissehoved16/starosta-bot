@@ -1339,10 +1339,15 @@ async def show_group(message: types.Message):
     await message.answer(text, parse_mode="Markdown", reply_markup=get_group_keyboard())
 
 @dp.callback_query(F.data == 'reg_student')
-async def register_student(callback: types.CallbackQuery):
+async def register_student(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear() # Сбрасываем ввод даты
     try:
         user_id = str(callback.from_user.id)
         async with async_session() as session:
+            # Если студент передумал, отвязываем его от предыдущего выбора
+            await session.execute(update(Student).where(Student.telegram_id == user_id).values(telegram_id=None))
+            await session.commit()
+            
             result = await session.execute(select(Student).where(Student.telegram_id == user_id))
             existing_student = result.scalars().first()
             if existing_student:
@@ -1363,7 +1368,7 @@ async def register_student(callback: types.CallbackQuery):
     except Exception as e:
         await callback.message.answer(f"Произошла ошибка: {e}")
         await callback.answer()
-
+        
 @dp.callback_query(F.data.startswith('link_'))
 async def link_account(callback: types.CallbackQuery, state: FSMContext):
     try:
@@ -1378,7 +1383,12 @@ async def link_account(callback: types.CallbackQuery, state: FSMContext):
         # Если даты рождения нет - просим ввести
         if not student.birthday:
             await state.update_data(link_student_id=student_id)
-            await callback.message.edit_text(f"Отлично! Ты в системе как {student.name}.\n\nУ тебя не указана дата рождения. Напиши её в формате **ДД.ММ** (например, 05.11):")
+            buttons = [[InlineKeyboardButton(text="🔙 Изменить студента", callback_data="reg_student")]]
+            await callback.message.edit_text(
+                f"Отлично! Ты в системе как {student.name}.\n\n"
+                f"У тебя не указана дата рождения. Напиши её в формате **ДД.ММ** (например, 05.11):",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+            )
             await state.set_state(AddStudent.birthday_input)
         else:
             await callback.message.edit_text(f"Отлично! Теперь ты в системе как {student.name}.\nНастроим уведомления?", reply_markup=get_notify_keyboard())
@@ -1386,7 +1396,7 @@ async def link_account(callback: types.CallbackQuery, state: FSMContext):
     except Exception as e:
         await callback.message.answer(f"Ошибка при привязке: {e}")
         await callback.answer()
-
+        
 @dp.callback_query(F.data.startswith('notify_all_'))
 async def set_notification(callback: types.CallbackQuery):
     try:
